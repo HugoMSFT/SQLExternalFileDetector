@@ -1,0 +1,23 @@
+[
+    {
+        "id": 1,
+        "name": "John Doe",
+        "age": 30,
+        "active": true,
+        "joined_date": "2020-01-15"
+    },
+    {
+        "id": 2,
+        "name": "Jane Smith",
+        "age": 25,
+        "active": true,
+        "joined_date": "2021-03-20"
+    },
+    {
+        "id": 3,
+        "name": "Bob Johnson",
+        "age": 35,
+        "active": false,
+        "joined_date": "2019-07-10"
+    }
+]
