@@ -167,6 +167,7 @@ class ExternalFileDetectionWebGUI:
         def preview_file(file_path):
             """Get file preview."""
             try:
+                # Flask automatically decodes the path parameter
                 file_path = unquote(file_path)
                 
                 # Find file in current files
