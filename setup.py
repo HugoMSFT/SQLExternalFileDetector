@@ -15,6 +15,7 @@ setup(
         "delta-spark>=2.2.0",
         "click>=8.1.0",
         "pyspark>=3.3.0",
+        "flask>=2.0.0",
     ],
     entry_points={
         "console_scripts": [
