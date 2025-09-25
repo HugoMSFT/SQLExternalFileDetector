@@ -46,11 +46,15 @@ class TestWebGUI(unittest.TestCase):
         """Test browse files API endpoint."""
         with patch('os.listdir') as mock_listdir, \
              patch('os.path.isdir') as mock_isdir, \
-             patch('os.path.getsize') as mock_getsize:
+             patch('os.path.getsize') as mock_getsize, \
+             patch('os.path.exists') as mock_exists, \
+             patch('os.path.abspath') as mock_abspath:
             
             mock_listdir.return_value = ['file1.csv', 'file2.json', 'folder1']
             mock_isdir.side_effect = lambda x: x.endswith('folder1')
             mock_getsize.return_value = 100
+            mock_exists.return_value = True
+            mock_abspath.return_value = '/test'
             
             response = self.client.get('/api/browse?path=/test')
             self.assertEqual(response.status_code, 200)
@@ -66,9 +70,16 @@ class TestWebGUI(unittest.TestCase):
             
     def test_analyze_files_api(self):
         """Test analyze files API endpoint."""
-        # Mock the file detector
-        with patch.object(self.web_gui.file_detector, 'analyze_file_metadata') as mock_analyze:
+        # Mock the file detector and path validation
+        with patch.object(self.web_gui.file_detector, 'analyze_file_metadata') as mock_analyze, \
+             patch('os.path.exists') as mock_exists, \
+             patch('os.path.isfile') as mock_isfile, \
+             patch('os.path.abspath') as mock_abspath:
+            
             mock_analyze.return_value = self.test_files[0]
+            mock_exists.return_value = True
+            mock_isfile.return_value = True
+            mock_abspath.return_value = '/test/sample.csv'
             
             response = self.client.post('/api/analyze_files', 
                                       json={'files': ['/test/sample.csv']})
@@ -81,9 +92,16 @@ class TestWebGUI(unittest.TestCase):
             
     def test_analyze_folder_api(self):
         """Test analyze folder API endpoint."""
-        # Mock the file detector
-        with patch.object(self.web_gui.file_detector, 'scan_directory') as mock_scan:
+        # Mock the file detector and path validation
+        with patch.object(self.web_gui.file_detector, 'scan_directory') as mock_scan, \
+             patch('os.path.exists') as mock_exists, \
+             patch('os.path.isdir') as mock_isdir, \
+             patch('os.path.abspath') as mock_abspath:
+            
             mock_scan.return_value = self.test_files
+            mock_exists.return_value = True
+            mock_isdir.return_value = True
+            mock_abspath.return_value = '/test'
             
             response = self.client.post('/api/analyze_folder', 
                                       json={'folder': '/test'})
