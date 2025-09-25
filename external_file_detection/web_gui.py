@@ -24,6 +24,45 @@ from .external_file_detector import ExternalFileDetectorApp
 from .file_detector import FileDetector
 
 
+def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True) -> str:
+    """
+    Validate and sanitize a path to prevent path injection attacks.
+    
+    Args:
+        path: Path to validate
+        allow_files: Whether to allow file paths
+        allow_dirs: Whether to allow directory paths
+        
+    Returns:
+        Sanitized absolute path
+        
+    Raises:
+        ValueError: If path is invalid or unsafe
+    """
+    if not path:
+        raise ValueError("Path cannot be empty")
+    
+    # Normalize and resolve the path
+    normalized_path = os.path.normpath(os.path.abspath(path))
+    
+    # Check if path exists
+    if not os.path.exists(normalized_path):
+        raise ValueError("Path does not exist")
+    
+    # Check if it's a file or directory as requested
+    if os.path.isfile(normalized_path) and not allow_files:
+        raise ValueError("File path not allowed")
+    
+    if os.path.isdir(normalized_path) and not allow_dirs:
+        raise ValueError("Directory path not allowed")
+    
+    # Additional security: Ensure path doesn't contain suspicious patterns
+    if '..' in normalized_path or any(char in normalized_path for char in ['<', '>', '|', '?', '*']):
+        raise ValueError("Path contains unsafe characters")
+    
+    return normalized_path
+
+
 class ExternalFileDetectionWebGUI:
     """Web-based GUI application for External File Detection."""
     
@@ -54,6 +93,9 @@ class ExternalFileDetectionWebGUI:
             """Browse files in a directory."""
             path = request.args.get('path', os.path.expanduser('~'))
             try:
+                # Validate and sanitize the path to prevent path injection
+                path = _validate_path(path, allow_files=False, allow_dirs=True)
+                
                 items = []
                 
                 # Add parent directory option if not at root
@@ -95,10 +137,15 @@ class ExternalFileDetectionWebGUI:
                     'items': items
                 })
                 
-            except Exception as e:
+            except (ValueError, PermissionError):
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': 'Directory not accessible'
+                })
+            except Exception:
+                return jsonify({
+                    'success': False,
+                    'error': 'Error accessing directory'
                 })
                 
         @self.app.route('/api/analyze_files', methods=['POST'])
@@ -106,6 +153,9 @@ class ExternalFileDetectionWebGUI:
             """Analyze selected files."""
             try:
                 data = request.get_json()
+                if not data:
+                    return jsonify({'success': False, 'error': 'Invalid request data'})
+                    
                 file_paths = data.get('files', [])
                 
                 if not file_paths:
@@ -117,15 +167,27 @@ class ExternalFileDetectionWebGUI:
                 # Analyze each file
                 for file_path in file_paths:
                     try:
+                        # Validate and sanitize file path
+                        file_path = _validate_path(file_path, allow_files=True, allow_dirs=False)
+                        
                         metadata = self.file_detector.analyze_file_metadata(file_path)
                         self.current_files.append(metadata)
-                    except Exception as e:
-                        # Add error entry
+                    except (ValueError, PermissionError):
+                        # Add error entry for validation or permission issues
                         error_metadata = {
                             'file_path': file_path,
                             'file_type': 'error',
                             'file_size': 0,
-                            'error': str(e)
+                            'error': 'File not accessible'
+                        }
+                        self.current_files.append(error_metadata)
+                    except Exception:
+                        # Add error entry for other issues
+                        error_metadata = {
+                            'file_path': file_path,
+                            'file_type': 'error',
+                            'file_size': 0,
+                            'error': 'Error analyzing file'
                         }
                         self.current_files.append(error_metadata)
                 
@@ -135,18 +197,24 @@ class ExternalFileDetectionWebGUI:
                     'count': len(self.current_files)
                 })
                 
-            except Exception as e:
-                return jsonify({'success': False, 'error': str(e)})
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error processing request'})
                 
         @self.app.route('/api/analyze_folder', methods=['POST'])
         def analyze_folder():
             """Analyze all supported files in a folder."""
             try:
                 data = request.get_json()
+                if not data:
+                    return jsonify({'success': False, 'error': 'Invalid request data'})
+                    
                 folder_path = data.get('folder')
                 
                 if not folder_path:
                     return jsonify({'success': False, 'error': 'No folder provided'})
+                
+                # Validate and sanitize folder path
+                folder_path = _validate_path(folder_path, allow_files=False, allow_dirs=True)
                 
                 # Clear current files
                 self.current_files = []
@@ -160,8 +228,13 @@ class ExternalFileDetectionWebGUI:
                     'count': len(self.current_files)
                 })
                 
-            except Exception as e:
-                return jsonify({'success': False, 'error': str(e)})
+            except (ValueError, PermissionError):
+                return jsonify({
+                    'success': False, 
+                    'error': 'Folder not accessible'
+                })
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error processing request'})
                 
         @self.app.route('/api/preview/<path:file_path>')
         def preview_file(file_path):
@@ -183,7 +256,7 @@ class ExternalFileDetectionWebGUI:
                 if 'error' in file_data:
                     return jsonify({
                         'success': False,
-                        'error': file_data['error']
+                        'error': 'Cannot preview file with errors'
                     })
                 
                 preview_content = self._generate_preview_content(file_data)
@@ -194,8 +267,8 @@ class ExternalFileDetectionWebGUI:
                     'file_type': file_data.get('file_type', 'unknown')
                 })
                 
-            except Exception as e:
-                return jsonify({'success': False, 'error': str(e)})
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error generating preview'})
                 
         @self.app.route('/api/sql_ddl/<path:file_path>')
         def get_sql_ddl(file_path):
@@ -217,7 +290,7 @@ class ExternalFileDetectionWebGUI:
                 if 'error' in file_data:
                     return jsonify({
                         'success': False,
-                        'error': file_data['error']
+                        'error': 'Cannot generate SQL DDL for file with errors'
                     })
                 
                 # Generate SQL DDL
@@ -232,8 +305,8 @@ class ExternalFileDetectionWebGUI:
                     'sql_ddl': sql_ddl
                 })
                 
-            except Exception as e:
-                return jsonify({'success': False, 'error': str(e)})
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error generating SQL DDL'})
                 
         @self.app.route('/api/file_details/<path:file_path>')
         def get_file_details(file_path):
@@ -256,8 +329,8 @@ class ExternalFileDetectionWebGUI:
                     'details': file_data
                 })
                 
-            except Exception as e:
-                return jsonify({'success': False, 'error': str(e)})
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error retrieving file details'})
                 
     def _generate_preview_content(self, file_data: Dict[str, Any]) -> str:
         """Generate preview content for a file."""
@@ -265,6 +338,9 @@ class ExternalFileDetectionWebGUI:
         file_type = file_data.get('file_type', 'unknown')
         
         try:
+            # Validate file path to prevent path injection
+            file_path = _validate_path(file_path, allow_files=True, allow_dirs=False)
+            
             if file_type in ['csv', 'txt', 'json']:
                 # Show text preview
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -310,14 +386,16 @@ class ExternalFileDetectionWebGUI:
                     
                     return '\n'.join(preview_content)
                     
-                except Exception as e:
-                    return f"Error reading Parquet file: {str(e)}"
+                except Exception:
+                    return "Error reading Parquet file"
                     
             else:
                 return f"Preview not available for {file_type} files"
                 
-        except Exception as e:
-            return f"Error loading preview: {str(e)}"
+        except (ValueError, PermissionError):
+            return "File not accessible"
+        except Exception:
+            return "Error loading preview"
     
     @staticmethod
     def format_file_size(size_bytes: int) -> str:
