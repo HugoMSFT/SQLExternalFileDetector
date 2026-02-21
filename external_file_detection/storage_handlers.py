@@ -4,9 +4,6 @@ import os
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
-import boto3
-from azure.storage.blob import BlobServiceClient
-from azure.identity import DefaultAzureCredential
 
 
 class StorageHandler(ABC):
@@ -64,6 +61,12 @@ class S3StorageHandler(StorageHandler):
     def __init__(self, aws_access_key_id: str = None, aws_secret_access_key: str = None,
                  region_name: str = 'us-east-1'):
         """Initialize S3 handler."""
+        try:
+            import boto3
+        except ImportError:
+            raise ImportError(
+                "boto3 is required for S3 storage. Install with: pip install boto3"
+            )
         self.s3_client = boto3.client(
             's3',
             aws_access_key_id=aws_access_key_id,
@@ -139,6 +142,14 @@ class AzureStorageHandler(StorageHandler):
     def __init__(self, account_name: str = None, account_key: str = None, 
                  connection_string: str = None):
         """Initialize Azure storage handler."""
+        try:
+            from azure.storage.blob import BlobServiceClient
+            from azure.identity import DefaultAzureCredential
+        except ImportError:
+            raise ImportError(
+                "azure-storage-blob and azure-identity are required for Azure storage. "
+                "Install with: pip install azure-storage-blob azure-identity"
+            )
         if connection_string:
             self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
         elif account_name:
@@ -256,7 +267,7 @@ class StorageFactory:
                 aws_secret_access_key=kwargs.get('aws_secret_access_key'),
                 region_name=kwargs.get('region_name', 'us-east-1')
             )
-        elif path.startswith('azure://') or path.startswith('https://') and 'blob.core.windows.net' in path:
+        elif path.startswith('azure://') or (path.startswith('https://') and 'blob.core.windows.net' in path):
             return AzureStorageHandler(
                 account_name=kwargs.get('azure_account_name'),
                 account_key=kwargs.get('azure_account_key'),
