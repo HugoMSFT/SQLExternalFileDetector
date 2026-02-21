@@ -20,7 +20,7 @@ def test_file_type_detection():
         txt_file = os.path.join(temp_dir, "test.txt")
         
         # CSV file
-        with open(csv_file, 'w') as f:
+        with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['id', 'name'])
             writer.writerow([1, 'John'])
@@ -46,7 +46,7 @@ def test_csv_metadata_analysis():
     with tempfile.TemporaryDirectory() as temp_dir:
         csv_file = os.path.join(temp_dir, "test.csv")
         
-        with open(csv_file, 'w') as f:
+        with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['id', 'name', 'age'])
             writer.writerow([1, 'John', 30])
@@ -94,7 +94,7 @@ def test_directory_scan():
         csv_file = os.path.join(temp_dir, "test.csv")
         json_file = os.path.join(temp_dir, "test.json")
         
-        with open(csv_file, 'w') as f:
+        with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['id', 'name'])
             writer.writerow([1, 'John'])

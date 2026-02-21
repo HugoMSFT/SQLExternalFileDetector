@@ -41,6 +41,15 @@ class TestWebGUI(unittest.TestCase):
         response = self.client.get('/')
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'External File Detection Tool', response.data)
+
+    def test_initial_path_api(self):
+        """Test /api/initial_path returns a valid directory."""
+        response = self.client.get('/api/initial_path')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertTrue(data['success'])
+        self.assertIn('path', data)
+        self.assertTrue(len(data['path']) > 0)
         
     def test_browse_files_api(self):
         """Test browse files API endpoint."""
@@ -61,7 +70,8 @@ class TestWebGUI(unittest.TestCase):
             
             data = json.loads(response.data)
             self.assertTrue(data['success'])
-            self.assertEqual(data['current_path'], '/test')
+            # On Windows os.path.abspath('/test') returns '\\test' or 'C:\\test'
+            self.assertIn('test', data['current_path'])
             
             # Should have files and folders
             items = data['items']
@@ -215,6 +225,58 @@ class TestWebGUI(unittest.TestCase):
         # Test with malformed JSON
         response = self.client.post('/api/analyze_files', data='invalid json')
         self.assertEqual(response.status_code, 400)
+
+    def test_sql_ddl_api_via_analyze_flow(self):
+        """Test SQL DDL generation after analysing real files."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('id,name,age\n1,Alice,30\n2,Bob,25\n')
+            csv_path = f.name
+
+        try:
+            # First analyse the file
+            resp = self.client.post('/api/analyze_files',
+                                    json={'files': [csv_path]})
+            self.assertEqual(resp.status_code, 200)
+            data = json.loads(resp.data)
+            self.assertTrue(data['success'])
+
+            # Use the stored file_path (which is os.path.abspath-normalised)
+            stored_path = data['files'][0]['file_path']
+
+            # Now request DDL using the exact stored path
+            from urllib.parse import quote
+            resp2 = self.client.get(
+                '/api/sql_ddl/' + quote(stored_path, safe='') +
+                '?target_platform=sql_server_2022&schema=dbo&data_source=DS')
+            self.assertEqual(resp2.status_code, 200)
+            data2 = json.loads(resp2.data)
+            self.assertTrue(data2['success'])
+            stmts = data2.get('statements', {})
+            self.assertIn('create_table', stmts)
+            self.assertIn('CREATE TABLE', stmts['create_table'])
+            # SQL Server mode should NOT have DISTRIBUTION clause
+            self.assertNotIn('DISTRIBUTION', stmts['create_table'])
+        finally:
+            os.unlink(csv_path)
+
+    def test_preview_table_api(self):
+        """Test /api/preview_table returns columnar data."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write('x,y\n1,hello\n2,world\n')
+            csv_path = f.name
+
+        try:
+            # Analyse first
+            self.client.post('/api/analyze_files', json={'files': [csv_path]})
+            # Preview
+            resp = self.client.get('/api/preview_table/' + csv_path.replace('\\', '/') + '?rows=10')
+            self.assertEqual(resp.status_code, 200)
+            data = json.loads(resp.data)
+            self.assertTrue(data['success'])
+            self.assertEqual(len(data['columns']), 2)
+            self.assertEqual(len(data['rows']), 2)
+        finally:
+            os.unlink(csv_path)
 
 
 if __name__ == '__main__':

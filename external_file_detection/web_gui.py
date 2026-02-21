@@ -1,4 +1,4 @@
-"""Web-based GUI for External File Detection.
+﻿"""Web-based GUI for External File Detection.
 
 Inspired by ParquetViewer, this provides a user-friendly web interface for:
 - Selecting files or folders
@@ -8,14 +8,15 @@ Inspired by ParquetViewer, this provides a user-friendly web interface for:
 
 import os
 import json
-import tempfile
+import uuid
+import time
+import threading
 from typing import Dict, List, Any, Optional
 from pathlib import Path
-from urllib.parse import quote, unquote
-import mimetypes
+from urllib.parse import unquote
 
 try:
-    from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+    from flask import Flask, render_template, request, jsonify, session
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
@@ -24,9 +25,15 @@ from .external_file_detector import ExternalFileDetectorApp
 from .file_detector import FileDetector
 
 
+# Module-level root directory constraint (None = unrestricted)
+_ROOT_DIR: Optional[str] = None
+
+
 def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True) -> str:
     """
     Validate and sanitize a path to prevent path injection attacks.
+    
+    When _ROOT_DIR is set, only paths underneath that root are allowed.
     
     Args:
         path: Path to validate
@@ -42,8 +49,14 @@ def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True)
     if not path:
         raise ValueError("Path cannot be empty")
     
-    # Normalize and resolve the path
-    normalized_path = os.path.normpath(os.path.abspath(path))
+    # Resolve symlinks and normalize the path
+    normalized_path = os.path.realpath(os.path.abspath(path))
+    
+    # Root directory constraint (after symlink resolution)
+    if _ROOT_DIR is not None:
+        root = os.path.realpath(os.path.abspath(_ROOT_DIR))
+        if not normalized_path.startswith(root + os.sep) and normalized_path != root:
+            raise ValueError("Path is outside the allowed root directory")
     
     # Check if path exists
     if not os.path.exists(normalized_path):
@@ -56,8 +69,8 @@ def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True)
     if os.path.isdir(normalized_path) and not allow_dirs:
         raise ValueError("Directory path not allowed")
     
-    # Additional security: Ensure path doesn't contain suspicious patterns
-    if '..' in normalized_path or any(char in normalized_path for char in ['<', '>', '|', '?', '*']):
+    # Ensure path components don't contain traversal or illegal characters
+    if '..' in Path(path).parts or any(c in normalized_path for c in '<>|?*'):
         raise ValueError("Path contains unsafe characters")
     
     return normalized_path
@@ -66,20 +79,59 @@ def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True)
 class ExternalFileDetectionWebGUI:
     """Web-based GUI application for External File Detection."""
     
-    def __init__(self):
-        """Initialize the web GUI application."""
+    def __init__(self, root_dir: str = None):
+        """Initialize the web GUI application.
+        
+        Args:
+            root_dir: If set, restrict all file access to this directory tree.
+        """
+        global _ROOT_DIR
         if not FLASK_AVAILABLE:
             raise ImportError("Flask is required for the web GUI. Install with: pip install flask")
+        
+        _ROOT_DIR = root_dir
             
         self.app = Flask(__name__, template_folder='templates', static_folder='static')
+        self.app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
         self.detector_app = ExternalFileDetectorApp()
         self.file_detector = FileDetector()
         
-        # Current session data
-        self.current_files: List[Dict[str, Any]] = []
+        # Thread-safe per-session file store
+        self._sessions_lock = threading.Lock()
+        self._sessions: Dict[str, Dict[str, Any]] = {}  # sid -> {'files': [...], 'ts': float}
+        self._session_ttl = 3600  # 1 hour TTL
         
         self.setup_routes()
-        
+
+    # --- thread-safe session helpers ---
+
+    def _sid(self) -> str:
+        """Return (or create) a per-browser session id."""
+        if 'sid' not in session:
+            session['sid'] = uuid.uuid4().hex
+        return session['sid']
+
+    def _get_files(self) -> List[Dict[str, Any]]:
+        sid = self._sid()
+        with self._sessions_lock:
+            entry = self._sessions.setdefault(sid, {'files': [], 'ts': time.time()})
+            entry['ts'] = time.time()
+            return entry['files']
+
+    def _set_files(self, files: List[Dict[str, Any]]) -> None:
+        sid = self._sid()
+        with self._sessions_lock:
+            self._sessions[sid] = {'files': files, 'ts': time.time()}
+            self._cleanup_expired_sessions()
+
+    def _cleanup_expired_sessions(self) -> None:
+        """Remove sessions older than TTL. Called inside _sessions_lock."""
+        now = time.time()
+        expired = [k for k, v in self._sessions.items()
+                   if now - v.get('ts', 0) > self._session_ttl]
+        for k in expired:
+            del self._sessions[k]
+
     def setup_routes(self):
         """Set up Flask routes."""
         
@@ -87,11 +139,17 @@ class ExternalFileDetectionWebGUI:
         def index():
             """Main page."""
             return render_template('index.html')
+
+        @self.app.route('/api/initial_path')
+        def initial_path():
+            """Return the initial browse path (cwd or configured root)."""
+            path = _ROOT_DIR or os.getcwd()
+            return jsonify({'success': True, 'path': path})
             
         @self.app.route('/api/browse')
         def browse_files():
             """Browse files in a directory."""
-            path = request.args.get('path', os.path.expanduser('~'))
+            path = request.args.get('path', '') or _ROOT_DIR or os.getcwd()
             try:
                 # Validate and sanitize the path to prevent path injection
                 path = _validate_path(path, allow_files=False, allow_dirs=True)
@@ -99,8 +157,8 @@ class ExternalFileDetectionWebGUI:
                 items = []
                 
                 # Add parent directory option if not at root
-                if path != '/' and path != os.path.expanduser('~'):
-                    parent = os.path.dirname(path)
+                parent = os.path.dirname(path)
+                if parent != path:  # at root when dirname == path (works on Windows & Unix)
                     items.append({
                         'name': '..',
                         'path': parent,
@@ -137,15 +195,20 @@ class ExternalFileDetectionWebGUI:
                     'items': items
                 })
                 
-            except (ValueError, PermissionError):
+            except ValueError as e:
                 return jsonify({
                     'success': False,
-                    'error': 'Directory not accessible'
+                    'error': f'Directory not accessible: {e}'
                 })
-            except Exception:
+            except PermissionError:
                 return jsonify({
                     'success': False,
-                    'error': 'Error accessing directory'
+                    'error': f'Permission denied: cannot read {path}'
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': f'Error accessing directory: {e}'
                 })
                 
         @self.app.route('/api/analyze_files', methods=['POST'])
@@ -161,8 +224,8 @@ class ExternalFileDetectionWebGUI:
                 if not file_paths:
                     return jsonify({'success': False, 'error': 'No files provided'})
                 
-                # Clear current files
-                self.current_files = []
+                # Build new file list
+                analyzed: List[Dict[str, Any]] = []
                 
                 # Analyze each file
                 for file_path in file_paths:
@@ -171,30 +234,27 @@ class ExternalFileDetectionWebGUI:
                         file_path = _validate_path(file_path, allow_files=True, allow_dirs=False)
                         
                         metadata = self.file_detector.analyze_file_metadata(file_path)
-                        self.current_files.append(metadata)
+                        analyzed.append(metadata)
                     except (ValueError, PermissionError):
-                        # Add error entry for validation or permission issues
-                        error_metadata = {
+                        analyzed.append({
                             'file_path': file_path,
                             'file_type': 'error',
                             'file_size': 0,
                             'error': 'File not accessible'
-                        }
-                        self.current_files.append(error_metadata)
+                        })
                     except Exception:
-                        # Add error entry for other issues
-                        error_metadata = {
+                        analyzed.append({
                             'file_path': file_path,
                             'file_type': 'error',
                             'file_size': 0,
                             'error': 'Error analyzing file'
-                        }
-                        self.current_files.append(error_metadata)
+                        })
                 
+                self._set_files(analyzed)
                 return jsonify({
                     'success': True,
-                    'files': self.current_files,
-                    'count': len(self.current_files)
+                    'files': analyzed,
+                    'count': len(analyzed)
                 })
                 
             except Exception:
@@ -216,16 +276,14 @@ class ExternalFileDetectionWebGUI:
                 # Validate and sanitize folder path
                 folder_path = _validate_path(folder_path, allow_files=False, allow_dirs=True)
                 
-                # Clear current files
-                self.current_files = []
-                
                 # Scan directory
-                self.current_files = self.file_detector.scan_directory(folder_path)
+                scanned = self.file_detector.scan_directory(folder_path)
+                self._set_files(scanned)
                 
                 return jsonify({
                     'success': True,
-                    'files': self.current_files,
-                    'count': len(self.current_files)
+                    'files': scanned,
+                    'count': len(scanned)
                 })
                 
             except (ValueError, PermissionError):
@@ -243,9 +301,9 @@ class ExternalFileDetectionWebGUI:
                 # Flask automatically decodes the path parameter
                 file_path = unquote(file_path)
                 
-                # Find file in current files
+                # Find file in current session files
                 file_data = None
-                for f in self.current_files:
+                for f in self._get_files():
                     if f['file_path'] == file_path:
                         file_data = f
                         break
@@ -276,10 +334,21 @@ class ExternalFileDetectionWebGUI:
             try:
                 file_path = unquote(file_path)
                 data_source = request.args.get('data_source', 'MyDataSource')
+                schema_name = request.args.get('schema', 'dbo')
+                target_platform = request.args.get('target_platform', 'synapse_dedicated')
+                table_name = request.args.get('table_name', '') or None
+                storage_url = request.args.get('storage_url', '') or None
+                schema_overrides_raw = request.args.get('schema_overrides', '')
+                schema_overrides = None
+                if schema_overrides_raw:
+                    try:
+                        schema_overrides = json.loads(schema_overrides_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 
-                # Find file in current files
+                # Find file in current session files
                 file_data = None
-                for f in self.current_files:
+                for f in self._get_files():
                     if f['file_path'] == file_path:
                         file_data = f
                         break
@@ -292,21 +361,48 @@ class ExternalFileDetectionWebGUI:
                         'success': False,
                         'error': 'Cannot generate SQL DDL for file with errors'
                     })
+
+                # Apply schema overrides if provided
+                gen_metadata = dict(file_data)
+                if schema_overrides and gen_metadata.get('schema'):
+                    new_schema = []
+                    new_nullable = list(gen_metadata.get('nullable_columns') or [])
+                    for col_name, col_type in gen_metadata['schema']:
+                        ov = schema_overrides.get(col_name, {})
+                        new_name = ov.get('colName', col_name)
+                        new_type = col_type  # keep original detected type
+                        new_schema.append((new_name, new_type))
+                        # Handle nullable override
+                        if 'nullable' in ov:
+                            if ov['nullable'] and new_name not in new_nullable:
+                                new_nullable.append(new_name)
+                            elif not ov['nullable'] and new_name in new_nullable:
+                                new_nullable.remove(new_name)
+                        # Store SQL type override
+                        if 'sqlType' in ov:
+                            gen_metadata.setdefault('sql_type_overrides', {})[new_name] = ov['sqlType']
+                    gen_metadata['schema'] = new_schema
+                    gen_metadata['nullable_columns'] = new_nullable
                 
-                # Generate SQL DDL
-                sql_ddl = self.detector_app.sql_generator.generate_complete_ddl(
-                    file_data,
+                # Generate all SQL statement types
+                all_stmts = self.detector_app.sql_generator.generate_all_statements(
+                    gen_metadata,
+                    table_name=table_name,
                     data_source=data_source,
-                    location=os.path.basename(file_data['file_path'])
+                    location=os.path.basename(file_data['file_path']),
+                    schema_name=schema_name,
+                    target_platform=target_platform,
+                    storage_url=storage_url,
                 )
-                
+
                 return jsonify({
                     'success': True,
-                    'sql_ddl': sql_ddl
+                    'sql_ddl': all_stmts.get('create_external_table', ''),  # legacy
+                    'statements': all_stmts
                 })
-                
-            except Exception:
-                return jsonify({'success': False, 'error': 'Server error generating SQL DDL'})
+
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Server error generating SQL DDL: {e}'})
                 
         @self.app.route('/api/file_details/<path:file_path>')
         def get_file_details(file_path):
@@ -314,9 +410,9 @@ class ExternalFileDetectionWebGUI:
             try:
                 file_path = unquote(file_path)
                 
-                # Find file in current files
+                # Find file in current session files
                 file_data = None
-                for f in self.current_files:
+                for f in self._get_files():
                     if f['file_path'] == file_path:
                         file_data = f
                         break
@@ -331,20 +427,67 @@ class ExternalFileDetectionWebGUI:
                 
             except Exception:
                 return jsonify({'success': False, 'error': 'Server error retrieving file details'})
-                
+
+        @self.app.route('/api/preview_table/<path:file_path>')
+        def preview_table(file_path):
+            """Return tabular preview data (columns + rows) for the file."""
+            try:
+                file_path = unquote(file_path)
+                # Validate first
+                safe_path = _validate_path(file_path, allow_files=True, allow_dirs=True)
+                rows = int(request.args.get('rows', 100))
+                data = self.file_detector.get_preview_data(safe_path, max_rows=rows)
+                return jsonify({'success': True, **data})
+            except (ValueError, PermissionError) as e:
+                return jsonify({'success': False, 'error': str(e)})
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Preview error: {e}'})
+
+        @self.app.route('/api/analyze_file', methods=['POST'])
+        def analyze_single_file():
+            """Analyse a single file by path and return full metadata + all SQL."""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({'success': False, 'error': 'Invalid request'})
+                file_path = data.get('file_path', '')
+                data_source = data.get('data_source', 'MyDataSource')
+                safe_path = _validate_path(file_path, allow_files=True, allow_dirs=True)
+                metadata = self.file_detector.analyze_file_metadata(safe_path)
+                statements = self.detector_app.sql_generator.generate_all_statements(
+                    metadata, data_source=data_source
+                )
+                # Store in session
+                current = self._get_files()
+                existing = next((i for i, f in enumerate(current)
+                                 if f['file_path'] == safe_path), None)
+                if existing is not None:
+                    current[existing] = metadata
+                else:
+                    current.append(metadata)
+                self._set_files(current)
+                return jsonify({'success': True, 'metadata': metadata, 'statements': statements})
+            except (ValueError, PermissionError) as e:
+                return jsonify({'success': False, 'error': str(e)})
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Analysis error: {e}'})
+
     def _generate_preview_content(self, file_data: Dict[str, Any]) -> str:
-        """Generate preview content for a file."""
+        """Generate preview content for a file (legacy text fallback â€” UI uses /api/preview_table)."""
         file_path = file_data['file_path']
         file_type = file_data.get('file_type', 'unknown')
-        
+        encoding = file_data.get('encoding') or 'utf-8'
+        if encoding == 'binary':
+            encoding = 'utf-8'
+
         try:
             # Validate file path to prevent path injection
-            file_path = _validate_path(file_path, allow_files=True, allow_dirs=False)
-            
-            if file_type in ['csv', 'txt', 'json']:
-                # Show text preview
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                    # Read first 50 lines or 5KB, whichever is smaller
+            allow_dirs = file_type in ('delta',)
+            file_path = _validate_path(file_path, allow_files=True, allow_dirs=allow_dirs)
+
+            if file_type in ('csv', 'text', 'json'):
+                # Show text preview using detected encoding
+                with open(file_path, 'r', encoding=encoding, errors='replace') as f:
                     content = []
                     for i, line in enumerate(f):
                         if i >= 50:
@@ -354,37 +497,55 @@ class ExternalFileDetectionWebGUI:
                         if len(''.join(content)) > 5000:
                             content.append("... (truncated)")
                             break
-                    
-                    return '\n'.join(content)
-                    
-            elif file_type == 'parquet':
-                # Show parquet metadata
+                return '\n'.join(content)
+
+            elif file_type in ('parquet', 'delta'):
+                # Show metadata + sample data
                 try:
                     import pyarrow.parquet as pq
+                    import pandas as pd
+
+                    if file_type == 'delta':
+                        try:
+                            from deltalake import DeltaTable  # type: ignore
+                            dt = DeltaTable(file_path)
+                            dm = dt.metadata()
+                            schema = dt.schema()
+                            pv = [
+                                f'Delta Table: {os.path.basename(file_path)}',
+                                f'Version    : {dt.version()}',
+                                f'Partitions : {dm.partition_columns or "none"}',
+                                '',
+                                'Schema:',
+                            ]
+                            for f2 in schema.fields:
+                                pv.append(f'  {f2.name}: {f2.type}{"  (nullable)" if f2.nullable else ""}')
+                            try:
+                                df = dt.to_pandas().head(10)
+                                pv += ['', 'Sample Data (first 10 rows):', df.to_string()]
+                            except Exception:
+                                pv.append('(Could not load sample data)')
+                            return '\n'.join(pv)
+                        except ImportError:
+                            pass  # fall through to parquet path
+
                     parquet_file = pq.ParquetFile(file_path)
-                    
-                    preview_content = []
-                    file_name = os.path.basename(file_path)
-                    preview_content.append(f"Parquet File: {file_name}")
-                    preview_content.append(f"Rows: {parquet_file.metadata.num_rows:,}")
-                    preview_content.append(f"Columns: {len(parquet_file.schema)}")
-                    preview_content.append("")
-                    preview_content.append("Schema:")
+                    pv = [
+                        f'Parquet File: {os.path.basename(file_path)}',
+                        f'Rows        : {parquet_file.metadata.num_rows:,}',
+                        f'Row groups  : {parquet_file.metadata.num_row_groups}',
+                        f'Columns     : {len(parquet_file.schema)}',
+                        '',
+                        'Schema:',
+                    ]
                     for field in parquet_file.schema:
-                        preview_content.append(f"  {field.name}: {field.type}")
-                    
-                    # Show sample data if possible
+                        pv.append(f'  {field.name}: {field.type}')
                     try:
-                        table = parquet_file.read()
-                        df = table.to_pandas().head(10)
-                        preview_content.append("")
-                        preview_content.append("Sample Data (first 10 rows):")
-                        preview_content.append(df.to_string())
+                        df = parquet_file.read().to_pandas().head(10)
+                        pv += ['', 'Sample Data (first 10 rows):', df.to_string()]
                     except Exception:
-                        preview_content.append("")
-                        preview_content.append("Could not load sample data")
-                    
-                    return '\n'.join(preview_content)
+                        pv.append('(Could not load sample data)')
+                    return '\n'.join(pv)
                     
                 except Exception:
                     return "Error reading Parquet file"
@@ -413,685 +574,21 @@ class ExternalFileDetectionWebGUI:
         
     def run(self, host='127.0.0.1', port=5000, debug=False):
         """Run the web application."""
-        # Create templates directory and files if they don't exist
-        self._create_templates()
+        # Ensure templates directory exists
+        templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
+        os.makedirs(templates_dir, exist_ok=True)
+        
+        index_path = os.path.join(templates_dir, 'index.html')
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(
+                f"Template not found at {index_path}. "
+                "Please ensure templates/index.html is present in the package."
+            )
         
         print(f"Starting External File Detection Web GUI...")
         print(f"Open your browser and go to: http://{host}:{port}")
         
         self.app.run(host=host, port=port, debug=debug)
-        
-    def _create_templates(self):
-        """Create HTML templates."""
-        templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
-        os.makedirs(templates_dir, exist_ok=True)
-        
-        # Create index.html template
-        index_html = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>External File Detection Tool</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: #2563eb;
-            color: white;
-            padding: 20px;
-        }
-        
-        .header h1 {
-            margin: 0;
-            font-size: 24px;
-        }
-        
-        .toolbar {
-            padding: 20px;
-            background: #f8fafc;
-            border-bottom: 1px solid #e5e7eb;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        
-        .btn {
-            padding: 8px 16px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            background: white;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 14px;
-        }
-        
-        .btn:hover {
-            background: #f3f4f6;
-        }
-        
-        .btn-primary {
-            background: #2563eb;
-            color: white;
-            border-color: #2563eb;
-        }
-        
-        .btn-primary:hover {
-            background: #1d4ed8;
-        }
-        
-        .input-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .input-group label {
-            font-weight: 500;
-        }
-        
-        .input-group input {
-            padding: 6px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .main-content {
-            display: flex;
-            height: 600px;
-        }
-        
-        .sidebar {
-            width: 350px;
-            border-right: 1px solid #e5e7eb;
-            overflow-y: auto;
-        }
-        
-        .content-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .tabs {
-            display: flex;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        
-        .tab {
-            padding: 12px 20px;
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-        }
-        
-        .tab.active {
-            border-bottom-color: #2563eb;
-            background: #eff6ff;
-        }
-        
-        .tab-content {
-            flex: 1;
-            padding: 20px;
-            overflow-y: auto;
-        }
-        
-        .file-list {
-            padding: 0;
-        }
-        
-        .file-item {
-            padding: 12px 20px;
-            border-bottom: 1px solid #e5e7eb;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .file-item:hover {
-            background: #f8fafc;
-        }
-        
-        .file-item.selected {
-            background: #eff6ff;
-            border-left: 3px solid #2563eb;
-        }
-        
-        .file-info {
-            flex: 1;
-        }
-        
-        .file-name {
-            font-weight: 500;
-            margin-bottom: 4px;
-        }
-        
-        .file-meta {
-            font-size: 12px;
-            color: #6b7280;
-        }
-        
-        .file-type-badge {
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 500;
-            text-transform: uppercase;
-        }
-        
-        .file-type-csv { background: #dbeafe; color: #1e40af; }
-        .file-type-json { background: #f3e8ff; color: #7c3aed; }
-        .file-type-parquet { background: #dcfce7; color: #166534; }
-        .file-type-text { background: #f3f4f6; color: #4b5563; }
-        .file-type-error { background: #fecaca; color: #dc2626; }
-        
-        .preview-content, .sql-content, .details-content {
-            background: #f8fafc;
-            border: 1px solid #e5e7eb;
-            border-radius: 6px;
-            padding: 16px;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 13px;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-        
-        .status-bar {
-            padding: 10px 20px;
-            background: #f8fafc;
-            border-top: 1px solid #e5e7eb;
-            font-size: 14px;
-            color: #6b7280;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #6b7280;
-        }
-        
-        .error {
-            color: #dc2626;
-            background: #fef2f2;
-            padding: 12px;
-            border-radius: 6px;
-            border: 1px solid #fecaca;
-        }
-        
-        .hidden {
-            display: none !important;
-        }
-        
-        .browser-content {
-            max-height: 400px;
-            overflow-y: auto;
-            border: 1px solid #e5e7eb;
-            border-radius: 6px;
-        }
-        
-        .browser-item {
-            padding: 8px 12px;
-            border-bottom: 1px solid #f3f4f6;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .browser-item:hover {
-            background: #f8fafc;
-        }
-        
-        .browser-item.directory {
-            font-weight: 500;
-        }
-        
-        .copy-btn {
-            float: right;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>External File Detection Tool</h1>
-        </div>
-        
-        <div class="toolbar">
-            <button class="btn btn-primary" onclick="showFileBrowser()">Browse Files</button>
-            <button class="btn" onclick="analyzeFolder()">Analyze Current Folder</button>
-            <div class="input-group">
-                <label for="dataSource">Data Source:</label>
-                <input type="text" id="dataSource" value="MyDataSource" placeholder="Enter data source name">
-            </div>
-            <button class="btn" onclick="clearFiles()">Clear</button>
-        </div>
-        
-        <div class="main-content">
-            <div class="sidebar">
-                <div id="fileList" class="file-list">
-                    <div class="loading">Select files to analyze</div>
-                </div>
-            </div>
-            
-            <div class="content-area">
-                <div class="tabs">
-                    <div class="tab active" onclick="showTab('preview')">Preview</div>
-                    <div class="tab" onclick="showTab('sql')">T-SQL DDL</div>
-                    <div class="tab" onclick="showTab('details')">Details</div>
-                </div>
-                
-                <div class="tab-content">
-                    <div id="previewTab" class="tab-pane">
-                        <div class="preview-content" id="previewContent">Select a file to see preview</div>
-                    </div>
-                    
-                    <div id="sqlTab" class="tab-pane hidden">
-                        <button class="btn copy-btn" onclick="copySqlToClipboard()">Copy to Clipboard</button>
-                        <div class="sql-content" id="sqlContent">Select a file to see T-SQL DDL</div>
-                    </div>
-                    
-                    <div id="detailsTab" class="tab-pane hidden">
-                        <div class="details-content" id="detailsContent">Select a file to see details</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="status-bar">
-            <span id="statusText">Ready</span>
-        </div>
-    </div>
-    
-    <!-- File Browser Modal -->
-    <div id="browserModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;">
-        <div style="background: white; border-radius: 8px; width: 600px; max-height: 80vh; overflow: hidden;">
-            <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
-                <h2 style="margin: 0;">Browse Files</h2>
-                <div style="margin-top: 10px; font-size: 14px; color: #6b7280;" id="currentPath"></div>
-            </div>
-            
-            <div class="browser-content" id="browserContent">
-                <div class="loading">Loading...</div>
-            </div>
-            
-            <div style="padding: 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between;">
-                <button class="btn" onclick="selectCurrentFolder()">Select This Folder</button>
-                <div>
-                    <button class="btn" onclick="hideBrowser()">Cancel</button>
-                    <button class="btn btn-primary" onclick="analyzeSelectedFiles()">Analyze Selected</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentFiles = [];
-        let selectedFiles = [];
-        let currentPath = '';
-        let selectedFileIndex = -1;
-        
-        function setStatus(message) {
-            document.getElementById('statusText').textContent = message;
-        }
-        
-        function showTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-pane').forEach(pane => {
-                pane.classList.add('hidden');
-            });
-            
-            // Remove active class from all tabs
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            
-            // Show selected tab
-            document.getElementById(tabName + 'Tab').classList.remove('hidden');
-            event.target.classList.add('active');
-        }
-        
-        function showFileBrowser() {
-            document.getElementById('browserModal').classList.remove('hidden');
-            browseDirectory(currentPath || '/home/runner');
-        }
-        
-        function hideBrowser() {
-            document.getElementById('browserModal').classList.add('hidden');
-        }
-        
-        function browseDirectory(path) {
-            const content = document.getElementById('browserContent');
-            content.innerHTML = '<div class="loading">Loading...</div>';
-            
-            fetch(`/api/browse?path=${encodeURIComponent(path)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        currentPath = data.current_path;
-                        document.getElementById('currentPath').textContent = currentPath;
-                        
-                        content.innerHTML = '';
-                        data.items.forEach(item => {
-                            const div = document.createElement('div');
-                            div.className = `browser-item ${item.type}`;
-                            
-                            if (item.type === 'directory') {
-                                div.innerHTML = `
-                                    <span>📁</span>
-                                    <span>${item.name}</span>
-                                `;
-                                div.onclick = () => browseDirectory(item.path);
-                            } else {
-                                div.innerHTML = `
-                                    <input type="checkbox" onchange="toggleFileSelection('${item.path}')">
-                                    <span>📄</span>
-                                    <span>${item.name}</span>
-                                    <span class="file-type-badge file-type-${item.file_type}">${item.file_type}</span>
-                                `;
-                            }
-                            
-                            content.appendChild(div);
-                        });
-                    } else {
-                        content.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-                    }
-                })
-                .catch(error => {
-                    content.innerHTML = `<div class="error">Error: ${error.message}</div>`;
-                });
-        }
-        
-        function toggleFileSelection(filePath) {
-            const index = selectedFiles.indexOf(filePath);
-            if (index > -1) {
-                selectedFiles.splice(index, 1);
-            } else {
-                selectedFiles.push(filePath);
-            }
-        }
-        
-        function selectCurrentFolder() {
-            if (currentPath) {
-                analyzeFolder(currentPath);
-                hideBrowser();
-            }
-        }
-        
-        function analyzeSelectedFiles() {
-            if (selectedFiles.length === 0) {
-                alert('Please select files to analyze');
-                return;
-            }
-            
-            setStatus('Analyzing selected files...');
-            
-            fetch('/api/analyze_files', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    files: selectedFiles
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    currentFiles = data.files;
-                    updateFileList();
-                    setStatus(`Analyzed ${data.count} files`);
-                    hideBrowser();
-                    selectedFiles = [];
-                } else {
-                    setStatus(`Error: ${data.error}`);
-                }
-            })
-            .catch(error => {
-                setStatus(`Error: ${error.message}`);
-            });
-        }
-        
-        function analyzeFolder(folderPath = null) {
-            const folder = folderPath || currentPath;
-            if (!folder) {
-                alert('No folder selected');
-                return;
-            }
-            
-            setStatus('Analyzing folder...');
-            
-            fetch('/api/analyze_folder', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    folder: folder
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    currentFiles = data.files;
-                    updateFileList();
-                    setStatus(`Found ${data.count} supported files`);
-                } else {
-                    setStatus(`Error: ${data.error}`);
-                }
-            })
-            .catch(error => {
-                setStatus(`Error: ${error.message}`);
-            });
-        }
-        
-        function updateFileList() {
-            const fileList = document.getElementById('fileList');
-            
-            if (currentFiles.length === 0) {
-                fileList.innerHTML = '<div class="loading">No files analyzed</div>';
-                return;
-            }
-            
-            fileList.innerHTML = '';
-            
-            currentFiles.forEach((file, index) => {
-                const div = document.createElement('div');
-                div.className = 'file-item';
-                div.onclick = () => selectFile(index);
-                
-                const fileName = file.file_path.split('/').pop();
-                const fileSize = formatFileSize(file.file_size || 0);
-                const hasError = 'error' in file;
-                
-                div.innerHTML = `
-                    <div class="file-info">
-                        <div class="file-name">${fileName}</div>
-                        <div class="file-meta">${fileSize} • ${file.file_path}</div>
-                    </div>
-                    <div class="file-type-badge file-type-${hasError ? 'error' : file.file_type}">
-                        ${hasError ? 'error' : file.file_type}
-                    </div>
-                `;
-                
-                fileList.appendChild(div);
-            });
-        }
-        
-        function selectFile(index) {
-            selectedFileIndex = index;
-            
-            // Update UI selection
-            document.querySelectorAll('.file-item').forEach((item, i) => {
-                if (i === index) {
-                    item.classList.add('selected');
-                } else {
-                    item.classList.remove('selected');
-                }
-            });
-            
-            // Load file data
-            const file = currentFiles[index];
-            loadFilePreview(file);
-            loadFileSql(file);
-            loadFileDetails(file);
-        }
-        
-        function loadFilePreview(file) {
-            const content = document.getElementById('previewContent');
-            content.textContent = 'Loading preview...';
-            
-            if ('error' in file) {
-                content.textContent = `Error: ${file.error}`;
-                return;
-            }
-            
-            fetch(`/api/preview/${encodeURIComponent(file.file_path)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        content.textContent = data.preview;
-                    } else {
-                        content.textContent = `Error: ${data.error}`;
-                    }
-                })
-                .catch(error => {
-                    content.textContent = `Error: ${error.message}`;
-                });
-        }
-        
-        function loadFileSql(file) {
-            const content = document.getElementById('sqlContent');
-            content.textContent = 'Loading SQL DDL...';
-            
-            if ('error' in file) {
-                content.textContent = `-- Cannot generate SQL DDL\\n-- Error: ${file.error}`;
-                return;
-            }
-            
-            const dataSource = document.getElementById('dataSource').value || 'MyDataSource';
-            
-            fetch(`/api/sql_ddl/${encodeURIComponent(file.file_path)}?data_source=${encodeURIComponent(dataSource)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        content.textContent = data.sql_ddl;
-                    } else {
-                        content.textContent = `-- Error generating SQL DDL: ${data.error}`;
-                    }
-                })
-                .catch(error => {
-                    content.textContent = `-- Error: ${error.message}`;
-                });
-        }
-        
-        function loadFileDetails(file) {
-            const content = document.getElementById('detailsContent');
-            
-            let details = [];
-            details.push(`File Path: ${file.file_path}`);
-            details.push(`File Type: ${file.file_type || 'unknown'}`);
-            details.push(`File Size: ${formatFileSize(file.file_size || 0)}`);
-            
-            if (file.row_count != null) {
-                details.push(`Rows: ${file.row_count.toLocaleString()}`);
-            }
-            
-            if (file.column_count != null) {
-                details.push(`Columns: ${file.column_count}`);
-            }
-            
-            if (file.delimiter) {
-                details.push(`Delimiter: '${file.delimiter}'`);
-            }
-            
-            if (file.encoding) {
-                details.push(`Encoding: ${file.encoding}`);
-            }
-            
-            if (file.has_header != null) {
-                details.push(`Has Header: ${file.has_header}`);
-            }
-            
-            if (file.compression) {
-                details.push(`Compression: ${file.compression}`);
-            }
-            
-            if (file.schema && file.schema.length > 0) {
-                details.push('');
-                details.push('Schema:');
-                file.schema.forEach(([name, type]) => {
-                    details.push(`  ${name}: ${type}`);
-                });
-            }
-            
-            if (file.error) {
-                details.push('');
-                details.push(`Error: ${file.error}`);
-            }
-            
-            content.textContent = details.join('\\n');
-        }
-        
-        function copySqlToClipboard() {
-            const content = document.getElementById('sqlContent').textContent;
-            navigator.clipboard.writeText(content).then(() => {
-                setStatus('SQL DDL copied to clipboard');
-            }).catch(() => {
-                setStatus('Failed to copy to clipboard');
-            });
-        }
-        
-        function clearFiles() {
-            currentFiles = [];
-            selectedFileIndex = -1;
-            updateFileList();
-            
-            document.getElementById('previewContent').textContent = 'Select a file to see preview';
-            document.getElementById('sqlContent').textContent = 'Select a file to see T-SQL DDL';
-            document.getElementById('detailsContent').textContent = 'Select a file to see details';
-            
-            setStatus('Cleared');
-        }
-        
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 B';
-            
-            const units = ['B', 'KB', 'MB', 'GB'];
-            let i = 0;
-            while (bytes >= 1024 && i < units.length - 1) {
-                bytes /= 1024;
-                i++;
-            }
-            
-            return `${bytes.toFixed(1)} ${units[i]}`;
-        }
-    </script>
-</body>
-</html>'''
-        
-        with open(os.path.join(templates_dir, 'index.html'), 'w') as f:
-            f.write(index_html)
 
 
 def main():
@@ -1101,5 +598,14 @@ def main():
         print("Install with: pip install flask")
         return
         
-    app = ExternalFileDetectionWebGUI()
-    app.run(debug=True)
+    import argparse
+    parser = argparse.ArgumentParser(description='External File Detection Web GUI')
+    parser.add_argument('--root-dir', default=None,
+                        help='Restrict file browsing to this directory tree')
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=5000)
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args()
+    
+    app = ExternalFileDetectionWebGUI(root_dir=args.root_dir)
+    app.run(host=args.host, port=args.port, debug=args.debug)

@@ -2,8 +2,7 @@
 
 import click
 import json
-import os
-from typing import Dict, Any
+import sys
 
 from .external_file_detector import ExternalFileDetectorApp
 
@@ -114,7 +113,7 @@ def analyze(location, data_source, output, format, aws_access_key_id,
             
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -159,7 +158,7 @@ def analyze_files(files, data_source, output, format):
     
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -178,7 +177,7 @@ def generate_data_source(name, storage_type, location, credential):
         click.echo(ddl)
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -234,7 +233,7 @@ def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
         
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
