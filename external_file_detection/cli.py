@@ -25,6 +25,23 @@ def main(verbose):
 
 
 @main.command()
+@click.option('--host', default='127.0.0.1', help='Host to bind to')
+@click.option('--port', default=5000, help='Port to bind to')
+@click.option('--debug', is_flag=True, help='Enable debug mode')
+def gui(host, port, debug):
+    """Launch the web-based graphical user interface."""
+    try:
+        from .web_gui import ExternalFileDetectionWebGUI
+        app = ExternalFileDetectionWebGUI()
+        app.run(host=host, port=port, debug=debug)
+    except ImportError as e:
+        click.echo(f"Error: Could not launch web GUI: {e}")
+        click.echo("Please ensure Flask is installed: pip install flask")
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+@main.command()
 @click.argument('location', type=str)
 @click.option('--data-source', '-d', default=None, 
               help='Name of the external data source for SQL DDL')
