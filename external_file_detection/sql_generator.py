@@ -285,7 +285,7 @@ class SQLGenerator:
             table_name = _clean_identifier(base)
 
         file_type = metadata.get('file_type', '')
-        file_path = file_path_override or metadata['file_path']
+        file_path = (file_path_override or metadata['file_path']).replace('\\', '/')
         encoding = metadata.get('encoding', 'utf-8') or 'utf-8'
         codepage = metadata.get('codepage', '65001')
 
@@ -379,7 +379,7 @@ class SQLGenerator:
         delim_escaped = delimiter.replace('\t', '\\t')
 
         blob_path = storage_url or f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
-        local_path = metadata['file_path']
+        local_path = metadata['file_path'].replace('\\', '/')
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         lines = [
@@ -1071,7 +1071,7 @@ class SQLGenerator:
             base = os.path.splitext(os.path.basename(metadata.get('file_path', 'data')))[0]
             table_name = _clean_identifier(base)
 
-        file_path_sql = metadata.get('file_path', r'C:\data\file.json').replace("'", "''")
+        file_path_sql = metadata.get('file_path', r'C:/data/file.json').replace('\\', '/').replace("'", "''")
 
         lines = [
             f'-- ====================================================================',

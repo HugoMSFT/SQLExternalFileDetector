@@ -14,7 +14,9 @@ class TestWebGUI(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.web_gui = ExternalFileDetectionWebGUI()
+        # Use temp dir as root so test temp files pass path validation
+        self.test_root = tempfile.mkdtemp()
+        self.web_gui = ExternalFileDetectionWebGUI(root_dir=self.test_root)
         self.app = self.web_gui.app
         self.app.config['TESTING'] = True
         self.client = self.app.test_client()
@@ -122,86 +124,86 @@ class TestWebGUI(unittest.TestCase):
             self.assertEqual(data['count'], 2)
             self.assertEqual(len(data['files']), 2)
             
-    @unittest.skip("Path routing has issues with Flask test client")
+    def _create_csv(self, content='id,name\n1,John\n2,Jane\n', name='test.csv'):
+        """Create a CSV file inside test_root."""
+        path = os.path.join(self.test_root, name)
+        with open(path, 'w') as f:
+            f.write(content)
+        return path
+
     def test_preview_api(self):
-        """Test file preview API endpoint."""
-        # Set up current files
-        self.web_gui.current_files = self.test_files
-        
-        # Mock preview generation
-        with patch.object(self.web_gui, '_generate_preview_content') as mock_preview:
-            mock_preview.return_value = "id,name\n1,John\n2,Jane"
-            
-            response = self.client.get('/api/preview//test/sample.csv')
-            self.assertEqual(response.status_code, 200)
-            
-            data = json.loads(response.data)
-            self.assertTrue(data['success'])
-            self.assertIn('id,name', data['preview'])
-            
-    @unittest.skip("Path routing has issues with Flask test client")
+        """Test file preview API via analyze-first flow."""
+        csv_path = self._create_csv()
+
+        resp = self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        stored_path = data['files'][0]['file_path']
+
+        from urllib.parse import quote
+        resp2 = self.client.get('/api/preview/' + quote(stored_path, safe=''))
+        self.assertEqual(resp2.status_code, 200)
+        data2 = json.loads(resp2.data)
+        self.assertTrue(data2['success'])
+        self.assertIn('id,name', data2['preview'])
+
     def test_sql_ddl_api(self):
-        """Test SQL DDL API endpoint."""
-        # Set up current files
-        self.web_gui.current_files = self.test_files
-        
-        response = self.client.get('/api/sql_ddl//test/sample.csv?data_source=TestDS')
-        self.assertEqual(response.status_code, 200)
-        
-        data = json.loads(response.data)
-        self.assertTrue(data['success'])
-        self.assertIn('CREATE EXTERNAL FILE FORMAT', data['sql_ddl'])
-        self.assertIn('CREATE EXTERNAL TABLE', data['sql_ddl'])
-        
-    @unittest.skip("Path routing has issues with Flask test client")
+        """Test SQL DDL API via analyze-first flow."""
+        csv_path = self._create_csv()
+
+        resp = self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        stored_path = data['files'][0]['file_path']
+
+        from urllib.parse import quote
+        resp2 = self.client.get(
+            '/api/sql_ddl/' + quote(stored_path, safe='') +
+            '?data_source=TestDS&target_platform=sql_server_2022')
+        self.assertEqual(resp2.status_code, 200)
+        data2 = json.loads(resp2.data)
+        self.assertTrue(data2['success'])
+        self.assertIn('statements', data2)
+
     def test_file_details_api(self):
-        """Test file details API endpoint."""
-        # Set up current files
-        self.web_gui.current_files = self.test_files
-        
-        response = self.client.get('/api/file_details//test/sample.csv')
-        self.assertEqual(response.status_code, 200)
-        
-        data = json.loads(response.data)
-        self.assertTrue(data['success'])
-        self.assertEqual(data['details']['file_type'], 'csv')
-        self.assertEqual(data['details']['file_size'], 100)
+        """Test file details API via analyze-first flow."""
+        csv_path = self._create_csv()
+
+        resp = self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        stored_path = data['files'][0]['file_path']
+
+        from urllib.parse import quote
+        resp2 = self.client.get('/api/file_details/' + quote(stored_path, safe=''))
+        self.assertEqual(resp2.status_code, 200)
+        data2 = json.loads(resp2.data)
+        self.assertTrue(data2['success'])
+        self.assertEqual(data2['details']['file_type'], 'csv')
         
     def test_preview_content_generation(self):
         """Test preview content generation for different file types."""
         # Test CSV preview
+        csv_path = self._create_csv('id,name\n1,John\n2,Jane\n', 'preview_test.csv')
         csv_file = {
-            'file_path': '/tmp/test.csv',
+            'file_path': csv_path,
             'file_type': 'csv'
         }
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            f.write('id,name\n1,John\n2,Jane\n')
-            csv_file['file_path'] = f.name
-            
-        try:
-            preview = self.web_gui._generate_preview_content(csv_file)
-            self.assertIn('id,name', preview)
-            self.assertIn('1,John', preview)
-        finally:
-            os.unlink(csv_file['file_path'])
-            
+        preview = self.web_gui._generate_preview_content(csv_file)
+        self.assertIn('id,name', preview)
+        self.assertIn('1,John', preview)
+
         # Test JSON preview
+        json_path = os.path.join(self.test_root, 'preview_test.json')
+        with open(json_path, 'w') as f:
+            json.dump([{'id': 1, 'name': 'John'}], f)
         json_file = {
-            'file_path': '/tmp/test.json',
+            'file_path': json_path,
             'file_type': 'json'
         }
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump([{'id': 1, 'name': 'John'}], f)
-            json_file['file_path'] = f.name
-            
-        try:
-            preview = self.web_gui._generate_preview_content(json_file)
-            self.assertIn('"id": 1', preview)
-            self.assertIn('"name": "John"', preview)
-        finally:
-            os.unlink(json_file['file_path'])
+        preview = self.web_gui._generate_preview_content(json_file)
+        self.assertIn('"id": 1', preview)
+        self.assertIn('"name": "John"', preview)
             
     def test_format_file_size(self):
         """Test file size formatting."""
@@ -211,72 +213,70 @@ class TestWebGUI(unittest.TestCase):
         self.assertEqual(ExternalFileDetectionWebGUI.format_file_size(1024 * 1024), "1.0 MB")
         self.assertEqual(ExternalFileDetectionWebGUI.format_file_size(1024 * 1024 * 1024), "1.0 GB")
         
-    @unittest.skip("Path routing has issues with Flask test client")
     def test_error_handling(self):
         """Test error handling in API endpoints."""
-        # Test with non-existent file
-        response = self.client.get('/api/preview//nonexistent/file.csv')
+        # Test preview with unregistered file
+        response = self.client.get('/api/preview/nonexistent_file.csv')
         self.assertEqual(response.status_code, 200)
-        
         data = json.loads(response.data)
         self.assertFalse(data['success'])
-        self.assertIn('not found', data['error'])
-        
-        # Test with malformed JSON
-        response = self.client.post('/api/analyze_files', data='invalid json')
-        self.assertEqual(response.status_code, 400)
+        self.assertIn('not found', data['error'].lower())
+
+        # Test analyze with non-existent file
+        response = self.client.post('/api/analyze_files',
+                                    json={'files': ['/nonexistent/path/file.csv']})
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertTrue(data['success'])  # request itself succeeds
+        self.assertEqual(data['files'][0]['file_type'], 'error')
+
+        # Test analyze with no files
+        response = self.client.post('/api/analyze_files', json={'files': []})
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertFalse(data['success'])
 
     def test_sql_ddl_api_via_analyze_flow(self):
         """Test SQL DDL generation after analysing real files."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            f.write('id,name,age\n1,Alice,30\n2,Bob,25\n')
-            csv_path = f.name
+        csv_path = self._create_csv('id,name,age\n1,Alice,30\n2,Bob,25\n', 'flow_test.csv')
 
-        try:
-            # First analyse the file
-            resp = self.client.post('/api/analyze_files',
-                                    json={'files': [csv_path]})
-            self.assertEqual(resp.status_code, 200)
-            data = json.loads(resp.data)
-            self.assertTrue(data['success'])
+        # First analyse the file
+        resp = self.client.post('/api/analyze_files',
+                                json={'files': [csv_path]})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertTrue(data['success'])
 
-            # Use the stored file_path (which is os.path.abspath-normalised)
-            stored_path = data['files'][0]['file_path']
+        # Use the stored file_path (which is os.path.abspath-normalised)
+        stored_path = data['files'][0]['file_path']
 
-            # Now request DDL using the exact stored path
-            from urllib.parse import quote
-            resp2 = self.client.get(
-                '/api/sql_ddl/' + quote(stored_path, safe='') +
-                '?target_platform=sql_server_2022&schema=dbo&data_source=DS')
-            self.assertEqual(resp2.status_code, 200)
-            data2 = json.loads(resp2.data)
-            self.assertTrue(data2['success'])
-            stmts = data2.get('statements', {})
-            self.assertIn('create_table', stmts)
-            self.assertIn('CREATE TABLE', stmts['create_table'])
-            # SQL Server mode should NOT have DISTRIBUTION clause
-            self.assertNotIn('DISTRIBUTION', stmts['create_table'])
-        finally:
-            os.unlink(csv_path)
+        # Now request DDL using the exact stored path
+        from urllib.parse import quote
+        resp2 = self.client.get(
+            '/api/sql_ddl/' + quote(stored_path, safe='') +
+            '?target_platform=sql_server_2022&schema=dbo&data_source=DS')
+        self.assertEqual(resp2.status_code, 200)
+        data2 = json.loads(resp2.data)
+        self.assertTrue(data2['success'])
+        stmts = data2.get('statements', {})
+        self.assertIn('create_table', stmts)
+        self.assertIn('CREATE TABLE', stmts['create_table'])
+        # SQL Server mode should NOT have DISTRIBUTION clause
+        self.assertNotIn('DISTRIBUTION', stmts['create_table'])
 
     def test_preview_table_api(self):
         """Test /api/preview_table returns columnar data."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            f.write('x,y\n1,hello\n2,world\n')
-            csv_path = f.name
+        csv_path = self._create_csv('x,y\n1,hello\n2,world\n', 'preview_tbl.csv')
 
-        try:
-            # Analyse first
-            self.client.post('/api/analyze_files', json={'files': [csv_path]})
-            # Preview
-            resp = self.client.get('/api/preview_table/' + csv_path.replace('\\', '/') + '?rows=10')
-            self.assertEqual(resp.status_code, 200)
-            data = json.loads(resp.data)
-            self.assertTrue(data['success'])
-            self.assertEqual(len(data['columns']), 2)
-            self.assertEqual(len(data['rows']), 2)
-        finally:
-            os.unlink(csv_path)
+        # Analyse first
+        self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        # Preview
+        resp = self.client.get('/api/preview_table/' + csv_path.replace('\\', '/') + '?rows=10')
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertTrue(data['success'])
+        self.assertEqual(len(data['columns']), 2)
+        self.assertEqual(len(data['rows']), 2)
 
 
 if __name__ == '__main__':

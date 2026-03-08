@@ -2,16 +2,26 @@
 
 import click
 import json
+import os
 import sys
+import logging
+from typing import Dict, Any
 
 from .external_file_detector import ExternalFileDetectorApp
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
 @click.version_option(version="1.0.0")
-def main():
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
+def main(verbose):
     """External File Detector - Detect file types and generate SQL DDL."""
-    pass
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 
 @main.command()
@@ -39,18 +49,18 @@ def gui(host, port, debug):
               help='Output file path for results')
 @click.option('--format', '-f', default='sql', type=click.Choice(['sql', 'json']),
               help='Output format')
-@click.option('--aws-access-key-id', default=None, 
-              help='AWS access key ID for S3 access')
-@click.option('--aws-secret-access-key', default=None,
-              help='AWS secret access key for S3 access')
-@click.option('--aws-region', default='us-east-1',
-              help='AWS region for S3 access')
-@click.option('--azure-account-name', default=None,
-              help='Azure storage account name')
-@click.option('--azure-account-key', default=None,
-              help='Azure storage account key')
-@click.option('--azure-connection-string', default=None,
-              help='Azure storage connection string')
+@click.option('--aws-access-key-id', default=None, envvar='AWS_ACCESS_KEY_ID',
+              help='AWS access key ID (or set AWS_ACCESS_KEY_ID env var)')
+@click.option('--aws-secret-access-key', default=None, envvar='AWS_SECRET_ACCESS_KEY',
+              help='AWS secret access key (or set AWS_SECRET_ACCESS_KEY env var)')
+@click.option('--aws-region', default='us-east-1', envvar='AWS_DEFAULT_REGION',
+              help='AWS region (or set AWS_DEFAULT_REGION env var)')
+@click.option('--azure-account-name', default=None, envvar='AZURE_STORAGE_ACCOUNT',
+              help='Azure storage account name (or set AZURE_STORAGE_ACCOUNT env var)')
+@click.option('--azure-account-key', default=None, envvar='AZURE_STORAGE_KEY',
+              help='Azure storage account key (or set AZURE_STORAGE_KEY env var)')
+@click.option('--azure-connection-string', default=None, envvar='AZURE_STORAGE_CONNECTION_STRING',
+              help='Azure storage connection string (or set AZURE_STORAGE_CONNECTION_STRING env var)')
 def analyze(location, data_source, output, format, aws_access_key_id, 
            aws_secret_access_key, aws_region, azure_account_name,
            azure_account_key, azure_connection_string):
@@ -194,12 +204,12 @@ def supported_types():
 
 @main.command()
 @click.argument('location')
-@click.option('--aws-access-key-id', default=None)
-@click.option('--aws-secret-access-key', default=None)
-@click.option('--aws-region', default='us-east-1')
-@click.option('--azure-account-name', default=None)
-@click.option('--azure-account-key', default=None)
-@click.option('--azure-connection-string', default=None)
+@click.option('--aws-access-key-id', default=None, envvar='AWS_ACCESS_KEY_ID')
+@click.option('--aws-secret-access-key', default=None, envvar='AWS_SECRET_ACCESS_KEY')
+@click.option('--aws-region', default='us-east-1', envvar='AWS_DEFAULT_REGION')
+@click.option('--azure-account-name', default=None, envvar='AZURE_STORAGE_ACCOUNT')
+@click.option('--azure-account-key', default=None, envvar='AZURE_STORAGE_KEY')
+@click.option('--azure-connection-string', default=None, envvar='AZURE_STORAGE_CONNECTION_STRING')
 def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
                azure_account_name, azure_account_key, azure_connection_string):
     """List files at the specified location."""
@@ -234,6 +244,16 @@ def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
         raise SystemExit(1)
+
+
+@main.command()
+@click.option('--host', '-h', default='127.0.0.1', help='Host to bind to')
+@click.option('--port', '-p', default=5000, type=int, help='Port to listen on')
+@click.option('--debug', is_flag=True, help='Enable debug mode')
+def web(host, port, debug):
+    """Launch the web UI."""
+    from .web_ui import run_web_ui
+    run_web_ui(host=host, port=port, debug=debug)
 
 
 if __name__ == '__main__':

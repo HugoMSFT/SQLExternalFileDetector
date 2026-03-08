@@ -1,9 +1,12 @@
 """Storage handlers for local, S3, and Azure storage."""
 
 import os
+import logging
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class StorageHandler(ABC):
@@ -161,6 +164,7 @@ class AzureStorageHandler(StorageHandler):
                 )
             else:
                 # Use default Azure credentials
+                from azure.identity import DefaultAzureCredential
                 account_url = f"https://{account_name}.blob.core.windows.net"
                 credential = DefaultAzureCredential()
                 self.blob_service_client = BlobServiceClient(

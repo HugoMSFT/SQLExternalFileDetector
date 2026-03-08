@@ -1,0 +1,76 @@
+sku,name,category,price,weight_kg,in_stock,rating,description
+SKU-00001,Product A0,Electronics,321.52,22.87,False,2.0,Description for product 0
+SKU-00002,Product B1,Clothing,17.38,6.7,True,3.2,Description for product 1
+SKU-00003,Product C2,Food & Beverage,141.14,14.08,True,1.0,Description for product 2
+SKU-00004,Product D3,Home & Garden,115.49,14.66,False,,Description for product 3
+SKU-00005,Product E4,Sports,369.55,10.05,True,4.6,Description for product 4
+SKU-00006,Product F5,Books,339.97,24.94,True,4.3,Description for product 5
+SKU-00007,Product G6,Toys,446.63,2.36,True,1.6,Description for product 6
+SKU-00008,Product H7,Electronics,48.03,,False,2.2,Description for product 7
+SKU-00009,Product I8,Clothing,213.85,,True,4.2,Description for product 8
+SKU-00010,Product J9,Food & Beverage,19.75,19.82,True,4.6,Description for product 9
+SKU-00011,Product K10,Home & Garden,113.23,1.68,False,2.0,Description for product 10
+SKU-00012,Product L11,Sports,255.15,24.9,True,4.1,Description for product 11
+SKU-00013,Product M12,Books,18.14,24.28,True,2.6,Description for product 12
+SKU-00014,Product N13,Toys,103.42,0.39,True,1.6,Description for product 13
+SKU-00015,Product O14,Electronics,326.69,17.07,True,4.5,Description for product 14
+SKU-00016,Product P15,Clothing,274.75,6.74,True,4.2,Description for product 15
+SKU-00017,Product Q16,Food & Beverage,114.12,2.88,True,1.1,Description for product 16
+SKU-00018,Product R17,Home & Garden,296.69,11.4,True,2.3,Description for product 17
+SKU-00019,Product S18,Sports,405.67,21.91,False,4.2,Description for product 18
+SKU-00020,Product T19,Books,8.22,12.56,True,4.2,Description for product 19
+SKU-00021,Product U20,Toys,403.88,22.82,True,4.1,Description for product 20
+SKU-00022,Product V21,Electronics,350.58,7.53,True,4.5,Description for product 21
+SKU-00023,Product W22,Clothing,173.42,15.26,True,1.9,
+SKU-00024,Product X23,Food & Beverage,81.96,19.09,False,2.8,Description for product 23
+SKU-00025,Product Y24,Home & Garden,478.82,19.49,False,4.2,Description for product 24
+SKU-00026,Product Z25,Sports,171.61,0.11,False,1.1,Description for product 25
+SKU-00027,Product A26,Books,50.91,0.58,True,2.3,Description for product 26
+SKU-00028,Product B27,Toys,52.87,21.98,False,4.9,
+SKU-00029,Product C28,Electronics,424.51,7.76,True,3.6,Description for product 28
+SKU-00030,Product D29,Clothing,303.84,,False,4.9,Description for product 29
+SKU-00031,Product E30,Food & Beverage,404.53,23.68,False,4.8,Description for product 30
+SKU-00032,Product F31,Home & Garden,366.22,,True,4.9,
+SKU-00033,Product G32,Sports,270.43,1.82,False,4.9,Description for product 32
+SKU-00034,Product H33,Books,486.69,19.17,False,1.4,Description for product 33
+SKU-00035,Product I34,Toys,192.37,,False,3.9,Description for product 34
+SKU-00036,Product J35,Electronics,278.26,13.79,True,3.4,Description for product 35
+SKU-00037,Product K36,Clothing,415.56,21.82,True,2.5,Description for product 36
+SKU-00038,Product L37,Food & Beverage,311.17,5.37,False,2.0,Description for product 37
+SKU-00039,Product M38,Home & Garden,431.54,18.28,True,1.0,Description for product 38
+SKU-00040,Product N39,Sports,290.79,7.86,True,3.2,Description for product 39
+SKU-00041,Product O40,Books,353.76,16.28,True,4.0,Description for product 40
+SKU-00042,Product P41,Toys,27.68,12.99,False,2.5,Description for product 41
+SKU-00043,Product Q42,Electronics,117.81,,True,,Description for product 42
+SKU-00044,Product R43,Clothing,148.25,8.52,False,2.3,
+SKU-00045,Product S44,Food & Beverage,44.5,5.83,True,4.4,Description for product 44
+SKU-00046,Product T45,Home & Garden,120.23,1.87,True,2.2,Description for product 45
+SKU-00047,Product U46,Sports,55.0,5.8,False,2.6,Description for product 46
+SKU-00048,Product V47,Books,142.6,21.5,False,2.2,Description for product 47
+SKU-00049,Product W48,Toys,319.66,,True,2.7,Description for product 48
+SKU-00050,Product X49,Electronics,185.59,16.76,False,3.7,Description for product 49
+SKU-00051,Product Y50,Clothing,188.24,3.39,False,3.5,Description for product 50
+SKU-00052,Product Z51,Food & Beverage,108.71,14.32,True,3.2,Description for product 51
+SKU-00053,Product A52,Home & Garden,137.15,19.64,False,,Description for product 52
+SKU-00054,Product B53,Sports,468.64,4.84,True,2.7,Description for product 53
+SKU-00055,Product C54,Books,325.78,,True,3.6,Description for product 54
+SKU-00056,Product D55,Toys,306.52,10.65,False,2.8,
+SKU-00057,Product E56,Electronics,89.71,18.25,True,2.9,Description for product 56
+SKU-00058,Product F57,Clothing,365.92,24.61,True,4.2,Description for product 57
+SKU-00059,Product G58,Food & Beverage,85.88,,True,1.3,Description for product 58
+SKU-00060,Product H59,Home & Garden,192.83,8.55,False,3.5,
+SKU-00061,Product I60,Sports,494.81,6.29,False,4.3,Description for product 60
+SKU-00062,Product J61,Books,321.8,11.27,True,3.7,
+SKU-00063,Product K62,Toys,280.69,7.04,False,1.8,Description for product 62
+SKU-00064,Product L63,Electronics,343.88,23.09,True,,
+SKU-00065,Product M64,Clothing,422.21,21.55,False,2.9,Description for product 64
+SKU-00066,Product N65,Food & Beverage,389.12,1.36,False,1.3,Description for product 65
+SKU-00067,Product O66,Home & Garden,118.38,20.92,False,3.5,
+SKU-00068,Product P67,Sports,20.89,23.17,True,3.8,Description for product 67
+SKU-00069,Product Q68,Books,161.15,4.24,True,2.0,
+SKU-00070,Product R69,Toys,137.53,5.42,False,1.0,Description for product 69
+SKU-00071,Product S70,Electronics,109.44,1.56,False,4.1,
+SKU-00072,Product T71,Electronics,471.74,24.63,True,2.7,Description for product 71
+SKU-00073,Product U72,Electronics,438.8,19.62,True,4.8,Description for product 72
+SKU-00074,Product V73,Electronics,160.77,10.63,False,1.2,Description for product 73
+SKU-00075,Product W74,Electronics,329.44,24.89,True,4.4,Description for product 74
