@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>External File Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <span>External File Detection</span>
+        </div>
+        <div class="nav-actions">
+            <button class="btn btn-ghost" id="themeToggle" title="Toggle theme">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <line x1="12" y1="1" x2="12" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="23"></line>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                    <line x1="1" y1="12" x2="3" y2="12"></line>
+                    <line x1="21" y1="12" x2="23" y2="12"></line>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+            </button>
+        </div>
+    </nav>
+
+    <main class="container">
+        <!-- Tab Navigation -->
+        <div class="tabs">
+            <button class="tab active" data-tab="upload">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                Upload Files
+            </button>
+            <button class="tab" data-tab="path">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                Analyze Path
+            </button>
+            <button class="tab" data-tab="manual">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                </svg>
+                Manual DDL
+            </button>
+            <button class="tab" data-tab="datasource">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                </svg>
+                Data Source
+            </button>
+        </div>
+
+        <!-- Upload Files Tab -->
+        <div class="tab-content active" id="tab-upload">
+            <div class="card">
+                <h2>Upload &amp; Analyze Files</h2>
+                <p class="text-muted">Upload files to detect their type and generate SQL DDL statements.</p>
+
+                <div class="drop-zone" id="dropZone">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <p>Drag &amp; drop files here or <strong>click to browse</strong></p>
+                    <p class="text-muted text-sm">Supports: CSV, JSON, TXT, Parquet, ORC, RC, Delta</p>
+                    <input type="file" id="fileInput" multiple hidden>
+                </div>
+
+                <div class="file-list" id="fileList" hidden></div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="uploadDataSource">External Data Source Name</label>
+                        <input type="text" id="uploadDataSource" placeholder="e.g., MyDataSource (optional)">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" id="analyzeUploadBtn" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    Analyze Files
+                </button>
+            </div>
+        </div>
+
+        <!-- Analyze Path Tab -->
+        <div class="tab-content" id="tab-path">
+            <div class="card">
+                <h2>Analyze Path</h2>
+                <p class="text-muted">Analyze files at a local directory, S3 bucket, or Azure Blob container.</p>
+
+                <div class="form-group">
+                    <label for="analyzePath">Path / URL</label>
+                    <input type="text" id="analyzePath" placeholder="e.g., C:\data\ or s3://bucket/prefix/ or azure://container/path/">
+                </div>
+
+                <div class="form-group">
+                    <label for="pathDataSource">External Data Source Name</label>
+                    <input type="text" id="pathDataSource" placeholder="Optional">
+                </div>
+
+                <!-- Cloud credentials (collapsible) -->
+                <details class="credentials-section">
+                    <summary>Cloud Storage Credentials</summary>
+                    <div class="credentials-grid">
+                        <fieldset>
+                            <legend>AWS S3</legend>
+                            <div class="form-group">
+                                <label for="awsKey">Access Key ID</label>
+                                <input type="text" id="awsKey" placeholder="AKIA...">
+                            </div>
+                            <div class="form-group">
+                                <label for="awsSecret">Secret Access Key</label>
+                                <input type="password" id="awsSecret" placeholder="Secret key">
+                            </div>
+                            <div class="form-group">
+                                <label for="awsRegion">Region</label>
+                                <input type="text" id="awsRegion" placeholder="us-east-1" value="us-east-1">
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend>Azure Blob Storage</legend>
+                            <div class="form-group">
+                                <label for="azureAccount">Account Name</label>
+                                <input type="text" id="azureAccount" placeholder="mystorageaccount">
+                            </div>
+                            <div class="form-group">
+                                <label for="azureKey">Account Key</label>
+                                <input type="password" id="azureKey" placeholder="Account key">
+                            </div>
+                            <div class="form-group">
+                                <label for="azureConnStr">Connection String</label>
+                                <input type="password" id="azureConnStr" placeholder="DefaultEndpointsProtocol=...">
+                            </div>
+                        </fieldset>
+                    </div>
+                </details>
+
+                <button class="btn btn-primary" id="analyzePathBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    Analyze Path
+                </button>
+            </div>
+        </div>
+
+        <!-- Manual DDL Tab -->
+        <div class="tab-content" id="tab-manual">
+            <div class="card">
+                <h2>Manual DDL Builder</h2>
+                <p class="text-muted">Manually define table schema and generate SQL DDL statements.</p>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="manualFileType">File Type</label>
+                        <select id="manualFileType">
+                            <option value="csv">CSV</option>
+                            <option value="json">JSON</option>
+                            <option value="parquet">Parquet</option>
+                            <option value="orc">ORC</option>
+                            <option value="rc">RC</option>
+                            <option value="text">Text</option>
+                            <option value="delta">Delta</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="manualTableName">Table Name</label>
+                        <input type="text" id="manualTableName" placeholder="ext_my_table" value="ext_my_table">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="manualDataSource">Data Source</label>
+                        <input type="text" id="manualDataSource" placeholder="Optional">
+                    </div>
+                    <div class="form-group">
+                        <label for="manualLocation">File Location</label>
+                        <input type="text" id="manualLocation" placeholder="e.g., /data/myfile.csv">
+                    </div>
+                </div>
+
+                <div class="form-row" id="csvOptions">
+                    <div class="form-group">
+                        <label for="manualDelimiter">Delimiter</label>
+                        <input type="text" id="manualDelimiter" value="," style="width:60px">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="manualHasHeader" checked> Has Header Row
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="manualEncoding">Encoding</label>
+                        <select id="manualEncoding">
+                            <option value="utf-8">UTF-8</option>
+                            <option value="latin-1">Latin-1</option>
+                            <option value="cp1252">CP1252</option>
+                        </select>
+                    </div>
+                </div>
+
+                <h3>Columns</h3>
+                <div id="columnsContainer">
+                    <div class="column-row">
+                        <input type="text" placeholder="Column name" class="col-name" value="id">
+                        <select class="col-type">
+                            <option value="int64" selected>INT (BIGINT)</option>
+                            <option value="int32">INT</option>
+                            <option value="float64">FLOAT</option>
+                            <option value="object">NVARCHAR(MAX)</option>
+                            <option value="bool">BIT</option>
+                            <option value="datetime64[ns]">DATETIME2</option>
+                            <option value="date">DATE</option>
+                        </select>
+                        <button class="btn btn-icon btn-danger remove-col" title="Remove column">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <button class="btn btn-outline" id="addColumnBtn">+ Add Column</button>
+
+                <div style="margin-top: 1.5rem;">
+                    <button class="btn btn-primary" id="generateManualDdlBtn">
+                        Generate DDL
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Source Tab -->
+        <div class="tab-content" id="tab-datasource">
+            <div class="card">
+                <h2>Create External Data Source</h2>
+                <p class="text-muted">Generate a CREATE EXTERNAL DATA SOURCE statement.</p>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="dsName">Data Source Name</label>
+                        <input type="text" id="dsName" placeholder="e.g., MyS3Source">
+                    </div>
+                    <div class="form-group">
+                        <label for="dsType">Storage Type</label>
+                        <select id="dsType">
+                            <option value="s3">Amazon S3</option>
+                            <option value="azure">Azure Blob Storage</option>
+                            <option value="local">Local / HADOOP</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="dsLocation">Location / URL</label>
+                    <input type="text" id="dsLocation" placeholder="e.g., s3://my-bucket/data/">
+                </div>
+
+                <div class="form-group">
+                    <label for="dsCredential">Credential Name</label>
+                    <input type="text" id="dsCredential" placeholder="Optional credential name">
+                </div>
+
+                <button class="btn btn-primary" id="generateDsBtn">
+                    Generate Data Source DDL
+                </button>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="results-section" id="resultsSection" hidden>
+            <div class="card">
+                <div class="results-header">
+                    <h2>Results</h2>
+                    <div class="results-actions">
+                        <button class="btn btn-outline btn-sm" id="copyResultsBtn" title="Copy to clipboard">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            Copy
+                        </button>
+                        <button class="btn btn-outline btn-sm" id="downloadSqlBtn" title="Download as SQL">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                            Download .sql
+                        </button>
+                        <button class="btn btn-outline btn-sm" id="clearResultsBtn" title="Clear results">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Summary cards -->
+                <div class="summary-cards" id="summaryCards" hidden>
+                    <div class="summary-card">
+                        <span class="summary-value" id="summaryFiles">0</span>
+                        <span class="summary-label">Files</span>
+                    </div>
+                    <div class="summary-card">
+                        <span class="summary-value" id="summarySize">0 B</span>
+                        <span class="summary-label">Total Size</span>
+                    </div>
+                    <div class="summary-card">
+                        <span class="summary-value" id="summaryTypes">0</span>
+                        <span class="summary-label">File Types</span>
+                    </div>
+                </div>
+
+                <!-- File results accordion -->
+                <div id="fileResults"></div>
+
+                <!-- Raw SQL output -->
+                <div class="sql-output" id="sqlOutput">
+                    <pre><code id="sqlCode"></code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading overlay -->
+        <div class="loading-overlay" id="loadingOverlay" hidden>
+            <div class="spinner"></div>
+            <p>Analyzing files...</p>
+        </div>
+
+        <!-- Toast notifications -->
+        <div class="toast-container" id="toastContainer"></div>
+    </main>
+
+    <footer class="footer">
+        <p>External File Detection v1.0.0 &mdash; Detects file types &amp; generates SQL DDL for external tables</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

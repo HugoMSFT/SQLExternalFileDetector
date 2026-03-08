@@ -3,12 +3,15 @@
 import os
 import json
 import csv
+import logging
 import mimetypes
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+logger = logging.getLogger(__name__)
 
 
 class FileDetector:
@@ -114,24 +117,25 @@ class FileDetector:
     def _analyze_csv(self, file_path: str) -> Dict[str, Any]:
         """Analyze CSV file metadata."""
         try:
-            # Read a sample to detect delimiter and structure
-            df = pd.read_csv(file_path, nrows=100)
-            
-            # Detect delimiter
+            # Detect delimiter from sample
             with open(file_path, 'r', encoding='utf-8') as f:
-                sample = f.read(1024)
+                sample = f.read(4096)
                 sniffer = csv.Sniffer()
                 delimiter = sniffer.sniff(sample).delimiter
-            
+
+            # Read full CSV once for both schema and row count
+            df = pd.read_csv(file_path, delimiter=delimiter)
+
             return {
                 'schema': [(col, str(dtype)) for col, dtype in df.dtypes.items()],
-                'row_count': len(pd.read_csv(file_path)),
+                'row_count': len(df),
                 'column_count': len(df.columns),
                 'delimiter': delimiter,
                 'has_header': True,
                 'encoding': 'utf-8'
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to analyze CSV %s: %s", file_path, e)
             return {'delimiter': ',', 'has_header': False}
     
     def _analyze_parquet(self, file_path: str) -> Dict[str, Any]:

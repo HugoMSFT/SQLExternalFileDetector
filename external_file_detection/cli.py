@@ -3,16 +3,25 @@
 import click
 import json
 import os
+import sys
+import logging
 from typing import Dict, Any
 
 from .external_file_detector import ExternalFileDetectorApp
 
+logger = logging.getLogger(__name__)
+
 
 @click.group()
 @click.version_option(version="1.0.0")
-def main():
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
+def main(verbose):
     """External File Detector - Detect file types and generate SQL DDL."""
-    pass
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 
 @main.command()
@@ -97,7 +106,7 @@ def analyze(location, data_source, output, format, aws_access_key_id,
             
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -142,7 +151,7 @@ def analyze_files(files, data_source, output, format):
     
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -161,7 +170,7 @@ def generate_data_source(name, storage_type, location, credential):
         click.echo(ddl)
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @main.command()
@@ -217,7 +226,17 @@ def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
         
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
+
+
+@main.command()
+@click.option('--host', '-h', default='127.0.0.1', help='Host to bind to')
+@click.option('--port', '-p', default=5000, type=int, help='Port to listen on')
+@click.option('--debug', is_flag=True, help='Enable debug mode')
+def web(host, port, debug):
+    """Launch the web UI."""
+    from .web_ui import run_web_ui
+    run_web_ui(host=host, port=port, debug=debug)
 
 
 if __name__ == '__main__':

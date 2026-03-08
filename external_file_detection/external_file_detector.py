@@ -1,6 +1,7 @@
 """Main external file detector application."""
 
 import os
+import logging
 import tempfile
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -8,6 +9,8 @@ from pathlib import Path
 from .file_detector import FileDetector
 from .sql_generator import SQLGenerator
 from .storage_handlers import StorageHandler, StorageFactory
+
+logger = logging.getLogger(__name__)
 
 
 class ExternalFileDetectorApp:
@@ -51,7 +54,10 @@ class ExternalFileDetectorApp:
             }
         
         # Create temporary directory for downloads if needed
-        if not location.startswith('/') and not os.path.exists(location):
+        is_local = os.path.exists(location) or os.path.isabs(location)
+        if not is_local and not location.startswith(('s3://', 'azure://', 'https://')):
+            is_local = True  # treat as local path even if it doesn't exist yet
+        if not is_local:
             self.temp_dir = tempfile.mkdtemp()
         
         results = {
@@ -95,17 +101,20 @@ class ExternalFileDetectorApp:
         local_path = file_path
         
         # Download file if it's remote
-        if not file_path.startswith('/') and not os.path.exists(file_path):
+        is_remote = file_path.startswith(('s3://', 'azure://', 'https://'))
+        if is_remote:
             filename = os.path.basename(file_path)
             local_path = os.path.join(self.temp_dir, filename)
             try:
                 local_path = storage_handler.download_file(file_path, local_path)
             except Exception as e:
+                logger.error("Failed to download %s: %s", file_path, e)
                 return {
                     'file_path': file_path,
                     'error': f"Failed to download file: {str(e)}",
                     'metadata': {'file_type': 'unknown'},
-                    'sql_ddl': None
+                    'sql_ddl': None,
+                    'table_name': self._generate_table_name(file_path)
                 }
         
         # Analyze file metadata
@@ -113,11 +122,13 @@ class ExternalFileDetectorApp:
             metadata = self.file_detector.analyze_file_metadata(local_path)
             metadata['original_path'] = file_path
         except Exception as e:
+            logger.error("Failed to analyze %s: %s", file_path, e)
             return {
                 'file_path': file_path,
                 'error': f"Failed to analyze file: {str(e)}",
                 'metadata': {'file_type': 'unknown'},
-                'sql_ddl': None
+                'sql_ddl': None,
+                'table_name': self._generate_table_name(file_path)
             }
         
         # Generate SQL DDL
