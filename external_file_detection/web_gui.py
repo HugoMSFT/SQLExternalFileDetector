@@ -10,6 +10,7 @@ import os
 import json
 import uuid
 import time
+import tempfile
 import threading
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -25,8 +26,11 @@ from .external_file_detector import ExternalFileDetectorApp
 from .file_detector import FileDetector
 
 
-# Module-level root directory constraint (None = unrestricted)
+# Module-level root directory constraint (defaults to cwd if not set)
 _ROOT_DIR: Optional[str] = None
+
+# Maximum upload size: 200 MB
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024
 
 
 def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True) -> str:
@@ -53,10 +57,10 @@ def _validate_path(path: str, allow_files: bool = True, allow_dirs: bool = True)
     normalized_path = os.path.realpath(os.path.abspath(path))
     
     # Root directory constraint (after symlink resolution)
-    if _ROOT_DIR is not None:
-        root = os.path.realpath(os.path.abspath(_ROOT_DIR))
-        if not normalized_path.startswith(root + os.sep) and normalized_path != root:
-            raise ValueError("Path is outside the allowed root directory")
+    root_dir = _ROOT_DIR or os.getcwd()
+    root = os.path.realpath(os.path.abspath(root_dir))
+    if not normalized_path.startswith(root + os.sep) and normalized_path != root:
+        raise ValueError("Path is outside the allowed root directory")
     
     # Check if path exists
     if not os.path.exists(normalized_path):
@@ -92,6 +96,7 @@ class ExternalFileDetectionWebGUI:
         _ROOT_DIR = root_dir
             
         self.app = Flask(__name__, template_folder='templates', static_folder='static')
+        self.app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
         self.app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
         self.detector_app = ExternalFileDetectorApp()
         self.file_detector = FileDetector()
@@ -170,12 +175,28 @@ class ExternalFileDetectionWebGUI:
                 for item in sorted(os.listdir(path)):
                     item_path = os.path.join(path, item)
                     if os.path.isdir(item_path):
-                        items.append({
-                            'name': item,
-                            'path': item_path,
-                            'type': 'directory',
-                            'size': 0
-                        })
+                        # Detect Delta tables: folder contains _delta_log
+                        if os.path.isdir(os.path.join(item_path, '_delta_log')):
+                            # Calculate total size of parquet files in the delta folder
+                            delta_size = sum(
+                                os.path.getsize(os.path.join(dp, f))
+                                for dp, _, fns in os.walk(item_path)
+                                for f in fns if not f.startswith('.')
+                            )
+                            items.append({
+                                'name': item,
+                                'path': item_path,
+                                'type': 'delta_table',
+                                'file_type': 'delta',
+                                'size': delta_size
+                            })
+                        else:
+                            items.append({
+                                'name': item,
+                                'path': item_path,
+                                'type': 'directory',
+                                'size': 0
+                            })
                     else:
                         # Check if file is supported
                         file_type = self.file_detector.detect_file_type(item_path)
@@ -231,23 +252,34 @@ class ExternalFileDetectionWebGUI:
                 for file_path in file_paths:
                     try:
                         # Validate and sanitize file path
-                        file_path = _validate_path(file_path, allow_files=True, allow_dirs=False)
+                        # Allow dirs for Delta tables (folders with _delta_log)
+                        is_delta = (os.path.isdir(file_path) and
+                                    os.path.isdir(os.path.join(file_path, '_delta_log')))
+                        file_path = _validate_path(file_path, allow_files=True,
+                                                   allow_dirs=is_delta)
                         
                         metadata = self.file_detector.analyze_file_metadata(file_path)
                         analyzed.append(metadata)
-                    except (ValueError, PermissionError):
+                    except ValueError as e:
                         analyzed.append({
                             'file_path': file_path,
                             'file_type': 'error',
                             'file_size': 0,
-                            'error': 'File not accessible'
+                            'error': f'Invalid path: {e}'
                         })
-                    except Exception:
+                    except PermissionError as e:
                         analyzed.append({
                             'file_path': file_path,
                             'file_type': 'error',
                             'file_size': 0,
-                            'error': 'Error analyzing file'
+                            'error': f'Permission denied: {e}'
+                        })
+                    except Exception as e:
+                        analyzed.append({
+                            'file_path': file_path,
+                            'file_type': 'error',
+                            'file_size': 0,
+                            'error': f'Analysis failed: {type(e).__name__}: {e}'
                         })
                 
                 self._set_files(analyzed)
@@ -259,7 +291,45 @@ class ExternalFileDetectionWebGUI:
                 
             except Exception:
                 return jsonify({'success': False, 'error': 'Server error processing request'})
-                
+
+        @self.app.route('/api/upload', methods=['POST'])
+        def upload_files():
+            """Accept uploaded files, save to temp dir, and analyze them."""
+            try:
+                uploaded = request.files.getlist('files')
+                if not uploaded:
+                    return jsonify({'success': False, 'error': 'No files uploaded'})
+
+                upload_dir = tempfile.mkdtemp(prefix='efd_upload_')
+                analyzed: List[Dict[str, Any]] = []
+
+                for f in uploaded:
+                    if not f.filename:
+                        continue
+                    # Sanitize the filename to prevent path traversal
+                    safe_name = os.path.basename(f.filename)
+                    dest = os.path.join(upload_dir, safe_name)
+                    f.save(dest)
+                    try:
+                        metadata = self.file_detector.analyze_file_metadata(dest)
+                        analyzed.append(metadata)
+                    except Exception as e:
+                        analyzed.append({
+                            'file_path': dest,
+                            'file_type': 'error',
+                            'file_size': 0,
+                            'error': f'Analysis failed: {type(e).__name__}: {e}'
+                        })
+
+                self._set_files(analyzed)
+                return jsonify({
+                    'success': True,
+                    'files': analyzed,
+                    'count': len(analyzed)
+                })
+            except Exception:
+                return jsonify({'success': False, 'error': 'Server error processing upload'})
+
         @self.app.route('/api/analyze_folder', methods=['POST'])
         def analyze_folder():
             """Analyze all supported files in a folder."""

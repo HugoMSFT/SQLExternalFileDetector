@@ -54,10 +54,8 @@ class ExternalFileDetectorApp:
             }
         
         # Create temporary directory for downloads if needed
-        is_local = os.path.exists(location) or os.path.isabs(location)
-        if not is_local and not location.startswith(('s3://', 'azure://', 'https://')):
-            is_local = True  # treat as local path even if it doesn't exist yet
-        if not is_local:
+        is_remote = location.startswith(('s3://', 'azure://', 'https://'))
+        if is_remote:
             self.temp_dir = tempfile.mkdtemp()
         
         results = {

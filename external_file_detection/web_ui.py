@@ -98,6 +98,14 @@ def create_app() -> Flask:
             return jsonify({"error": "No path specified"}), 400
 
         location = data["path"]
+        if not isinstance(location, str) or not location.strip():
+            return jsonify({"error": "Path cannot be empty"}), 400
+        location = location.strip()
+        if len(location) > 2048:
+            return jsonify({"error": "Path too long"}), 400
+        if '..' in Path(location).parts:
+            return jsonify({"error": "Path traversal not allowed"}), 400
+
         data_source = data.get("data_source", "")
         storage_config = {}
 

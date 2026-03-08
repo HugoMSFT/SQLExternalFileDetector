@@ -11,6 +11,8 @@ setup(
         "pyarrow>=10.0.0",
         "click>=8.1.0",
         "flask>=2.3.0",
+        "chardet>=4.0.0",
+        "openpyxl>=3.0.0",
     ],
     extras_require={
         "s3": ["boto3>=1.26.0"],
@@ -28,6 +30,7 @@ setup(
             "azure-identity>=1.12.0",
             "delta-spark>=2.2.0",
             "pyspark>=3.3.0",
+            "deltalake>=0.10.0",
         ],
     },
     include_package_data=True,

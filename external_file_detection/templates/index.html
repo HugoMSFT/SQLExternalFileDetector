@@ -240,18 +240,6 @@
         <button class="btn btn-primary" onclick="showBrowser()">Browse Files</button>
         <button class="btn" onclick="analyzeFolder()">Analyze Folder</button>
         <div class="input-group">
-            <label>Data Source:</label>
-            <input id="inpDataSource" value="MyDataSource" style="width:140px;">
-        </div>
-        <div class="input-group">
-            <label>Schema:</label>
-            <input id="inpSchema" value="dbo" style="width:80px;">
-        </div>
-        <div class="input-group">
-            <label>Table:</label>
-            <input id="inpTableName" placeholder="(auto)" style="width:120px;" title="Override target table name (leave blank for auto)">
-        </div>
-        <div class="input-group">
             <label>Platform:</label>
             <select id="selPlatform">
                 <option value="sql_server_2019">SQL Server 2019</option>
@@ -267,13 +255,6 @@
         </div>
         <button class="btn" onclick="exportAllSQL()" title="Download all SQL as a single .sql file">Export All SQL</button>
         <button class="btn" onclick="clearAll()">Clear</button>
-    </div>
-    <!-- second toolbar row: storage URL -->
-    <div class="toolbar-row2">
-        <div class="input-group">
-            <label>Storage URL:</label>
-            <input id="inpStorageUrl" placeholder="https://<account>.dfs.core.windows.net/<container>/<path>" style="width:520px;" title="Paste your real blob/ADLS URL here; generated SQL will use it">
-        </div>
     </div>
 
     <!-- main -->
@@ -291,7 +272,6 @@
                 <div class="tab" data-tab="openrowset">OPENROWSET</div>
                 <div class="tab" data-tab="ext_table">EXT TABLE</div>
                 <div class="tab" data-tab="copy_into">COPY INTO</div>
-                <div class="tab" data-tab="credential_setup">Credentials</div>
                 <div class="tab" data-tab="json_functions">JSON Functions</div>
                 <div class="tab" data-tab="for_json">FOR JSON</div>
                 <div class="tab" data-tab="schema_editor">Schema Editor</div>
@@ -305,7 +285,6 @@
                 <div class="tab-pane" id="pane-openrowset"><div class="placeholder">Select a file</div></div>
                 <div class="tab-pane" id="pane-ext_table"><div class="placeholder">Select a file</div></div>
                 <div class="tab-pane" id="pane-copy_into"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-credential_setup"><div class="placeholder">Select a file</div></div>
                 <div class="tab-pane" id="pane-json_functions"><div class="placeholder">Select a file</div></div>
                 <div class="tab-pane" id="pane-for_json"><div class="placeholder">Select a file</div></div>
                 <div class="tab-pane" id="pane-schema_editor"><div class="placeholder">Select a file to edit its schema</div></div>
@@ -361,11 +340,6 @@ fetch('/api/initial_path').then(r=>r.json()).then(d=>{
 /* ================================================================
    AUTO-REGENERATE SQL on toolbar change
    ================================================================ */
-['inpDataSource','inpSchema','inpTableName','inpStorageUrl'].forEach(id => {
-    document.getElementById(id).addEventListener('change', () => {
-        if (selectedIdx >= 0) loadSQL(currentFiles[selectedIdx]);
-    });
-});
 document.getElementById('selPlatform').addEventListener('change', () => {
     if (selectedIdx >= 0) loadSQL(currentFiles[selectedIdx]);
 });
@@ -384,18 +358,14 @@ document.getElementById('selPlatform').addEventListener('change', () => {
         e.preventDefault(); dragCounter=0; sidebar.classList.remove('drag-over'); zone.classList.remove('active');
         const files = e.dataTransfer.files;
         if (!files.length) return;
-        // Collect file paths (only works if full paths available via webkitRelativePath or we fallback to names)
-        const paths = [];
+        setStatus('Uploading & analysing ' + files.length + ' file(s)...');
+        const formData = new FormData();
         for (let i = 0; i < files.length; i++) {
-            // In Electron / local Flask, File.path gives the full path
-            const p = files[i].path || files[i].name;
-            if (p) paths.push(p);
+            formData.append('files', files[i]);
         }
-        if (!paths.length) { setStatus('Drag-and-drop: could not resolve file paths'); return; }
-        setStatus('Analysing ' + paths.length + ' dropped file(s)...');
-        fetch('/api/analyze_files', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({files: paths})
+        fetch('/api/upload', {
+            method:'POST',
+            body: formData
         }).then(r=>r.json()).then(d => {
             if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Analysed ' + d.count + ' file(s)'); }
             else setStatus('Error: ' + (d.error||''));
@@ -498,12 +468,12 @@ function loadPreview(f) {
    SQL GENERATION  — all statement types via /api/sql_ddl
    ================================================================ */
 function loadSQL(f) {
-    const ds = document.getElementById('inpDataSource').value || 'MyDataSource';
-    const sc = document.getElementById('inpSchema').value || 'dbo';
+    const ds = 'MyDataSource';
+    const sc = 'dbo';
     const pl = document.getElementById('selPlatform').value || 'synapse_dedicated';
-    const tn = document.getElementById('inpTableName').value || '';
-    const su = document.getElementById('inpStorageUrl').value || '';
-    const allPanes = ['create_table','bulk_insert','openrowset','ext_table','copy_into','credential_setup','json_functions','for_json','best_practices'];
+    const tn = '';
+    const su = '';
+    const allPanes = ['create_table','bulk_insert','openrowset','ext_table','copy_into','json_functions','for_json','best_practices'];
     allPanes.forEach(k =>
         setPaneHTML(k, '<div class="placeholder"><span class="loading-spinner"></span> Generating&hellip;</div>')
     );
@@ -532,7 +502,6 @@ function loadSQL(f) {
             setSqlPane('openrowset',        s.openrowset || '');
             setSqlPane('ext_table',         (s.external_file_format||'') + '\n\n' + (s.create_external_table||''));
             setSqlPane('copy_into',         s.copy_into || '');
-            setSqlPane('credential_setup',  s.credential_setup || '');
             setSqlPane('json_functions',    s.json_functions || '');
             setSqlPane('for_json',          s.for_json || '');
             setSqlPane('best_practices',    s.best_practices || '');
@@ -639,7 +608,7 @@ function exportAllSQL() {
     content += '-- Platform : ' + platformLabel + '\n';
     content += '-- Date     : ' + new Date().toISOString().slice(0,10) + '\n';
     content += '-- ==========================================================================\n\n';
-    const order = ['create_table','bulk_insert','openrowset','external_file_format','create_external_table','copy_into','credential_setup','json_functions','for_json','best_practices'];
+    const order = ['create_table','bulk_insert','openrowset','external_file_format','create_external_table','copy_into','json_functions','for_json','best_practices'];
     order.forEach(key => {
         const sql = lastStatements[key];
         if (sql && sql.trim()) {
@@ -778,11 +747,12 @@ function browseDir(path) {
                         if (cb.checked) checkedPaths.add(item.path);
                         else checkedPaths.delete(item.path);
                     });
+                    const icon = item.type === 'delta_table' ? '\uD83D\uDDC3\uFE0F ' : '\uD83D\uDCC4 ';
                     const span = document.createElement('span');
-                    span.textContent = '\uD83D\uDCC4 ' + item.name;
+                    span.textContent = icon + item.name + (item.type === 'delta_table' ? '/' : '');
                     const bdg = document.createElement('span');
-                    bdg.className = 'badge ' + ({csv:'badge-csv',json:'badge-json',parquet:'badge-parquet',delta:'badge-delta',text:'badge-text'}[item.file_type]||'badge-text');
-                    bdg.textContent = item.file_type;
+                    bdg.className = 'badge ' + ({csv:'badge-csv',json:'badge-json',parquet:'badge-parquet',delta:'badge-delta',text:'badge-text',excel:'badge-excel'}[item.file_type]||'badge-text');
+                    bdg.textContent = item.file_type || item.type;
                     div.appendChild(cb);
                     div.appendChild(span);
                     div.appendChild(bdg);
@@ -828,7 +798,7 @@ function analyzeFolder(folder) {
 function clearAll() {
     currentFiles = []; selectedIdx = -1; lastStatements = {}; schemaOverrides = {};
     renderFileList();
-    ['preview','metadata','create_table','bulk_insert','openrowset','ext_table','copy_into','credential_setup','json_functions','for_json','schema_editor','best_practices'].forEach(k =>
+    ['preview','metadata','create_table','bulk_insert','openrowset','ext_table','copy_into','json_functions','for_json','schema_editor','best_practices'].forEach(k =>
         setPaneHTML(k, '<div class="placeholder">Select a file</div>'));
     setStatus('Cleared');
 }

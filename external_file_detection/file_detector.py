@@ -12,6 +12,11 @@ import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
 
+# --- Constants ---
+CSV_SAMPLE_SIZE = 4096
+ENCODING_DETECTION_BYTES = 65536
+LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+
 
 def _json_safe(val: Any) -> Any:
     """Return a JSON-serialisable representation of *val* for sample storage."""
@@ -67,6 +72,12 @@ class FileDetector:
 
     def detect_file_type(self, file_path: str) -> str:
         """Detect the type of a file based on extension and content analysis."""
+        # Delta table detection: directory with _delta_log subfolder
+        if os.path.isdir(file_path):
+            if os.path.isdir(os.path.join(file_path, '_delta_log')):
+                return 'delta'
+            return 'unknown'
+
         path = Path(file_path)
         extension = path.suffix.lower()
 
@@ -117,9 +128,8 @@ class FileDetector:
         """Detect file encoding using chardet when available."""
         try:
             import chardet
-            sample_size = 65536
             with open(file_path, 'rb') as f:
-                raw = f.read(sample_size)
+                raw = f.read(ENCODING_DETECTION_BYTES)
             result = chardet.detect(raw)
             encoding = (result.get('encoding') or 'utf-8').lower()
             confidence = float(result.get('confidence') or 0.0)
@@ -154,11 +164,20 @@ class FileDetector:
             encoding, enc_confidence = 'binary', 1.0
         codepage = self.encoding_to_codepage(encoding)
 
+        if os.path.isdir(file_path):
+            file_size = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, _, fns in os.walk(file_path)
+                for f in fns
+            )
+        else:
+            file_size = os.path.getsize(file_path)
+
         metadata: Dict[str, Any] = {
             'file_path': file_path,
             'file_name': os.path.basename(file_path),
             'file_type': file_type,
-            'file_size': os.path.getsize(file_path),
+            'file_size': file_size,
             'schema': None,
             'row_count': None,
             'column_count': None,
@@ -230,7 +249,7 @@ class FileDetector:
 
             try:
                 file_size = os.path.getsize(file_path)
-                if file_size > 100 * 1024 * 1024:  # > 100 MB — estimate row count
+                if file_size > LARGE_FILE_THRESHOLD:  # estimate row count for large files
                     with open(file_path, 'r', encoding=encoding, errors='replace') as f:
                         sample_lines = [f.readline() for _ in range(500)]
                     avg_line = sum(len(l) for l in sample_lines) / max(len(sample_lines), 1)
@@ -339,7 +358,12 @@ class FileDetector:
                 'encoding': 'binary',
             }
         except ImportError:
-            return self._analyze_parquet(file_path)
+            logger.warning("DeltaTable analysis requires 'deltalake' package. "
+                           "Falling back to Parquet analysis for %s. "
+                           "Install with: pip install deltalake", file_path)
+            result = self._analyze_parquet(file_path)
+            result['warning'] = 'Delta table support requires: pip install deltalake'
+            return result
         except Exception as e:
             return {'error': str(e), 'encoding': 'binary'}
 
@@ -447,6 +471,8 @@ class FileDetector:
                 import openpyxl  # noqa: F401
                 df = pd.read_excel(file_path, nrows=200, engine='openpyxl')
             except ImportError:
+                logger.warning("openpyxl not installed; Excel analysis may be limited. "
+                               "Install with: pip install openpyxl")
                 df = pd.read_excel(file_path, nrows=200)
 
             schema = []

@@ -206,6 +206,52 @@ def test_bulk_insert_non_csv():
 
 
 # -------------------------------------------------------------------
+# Platform-specific tests
+# -------------------------------------------------------------------
+
+def test_bulk_insert_not_supported_on_synapse_serverless():
+    """BULK INSERT is not available on Synapse Serverless."""
+    gen = SQLGenerator()
+    meta = {'file_type': 'csv', 'file_path': 'data.csv',
+            'delimiter': ',', 'has_header': True}
+    sql = gen.generate_bulk_insert(meta, 'tbl', target_platform='synapse_serverless')
+    assert 'not supported' in sql.lower() or 'alternative' in sql.lower()
+
+
+def test_copy_into_not_supported_on_sql_server_on_prem():
+    """COPY INTO is only for Synapse Dedicated, not on-prem SQL Server."""
+    gen = SQLGenerator()
+    meta = {'file_type': 'csv', 'file_path': 'data.csv',
+            'delimiter': ',', 'has_header': True,
+            'schema': [('a', 'int64')]}
+    sql = gen.generate_copy_into(meta, 'tbl', target_platform='sql_server_2022')
+    assert 'not supported' in sql.lower() or 'alternative' in sql.lower()
+
+
+def test_windows_backslashes_normalized_in_bulk_insert():
+    """BULK INSERT should handle Windows backslash paths."""
+    gen = SQLGenerator()
+    meta = {'file_type': 'csv', 'file_path': 'D:\\data\\files\\test.csv',
+            'delimiter': ',', 'has_header': True,
+            'encoding': 'utf-8', 'codepage': '65001'}
+    sql = gen.generate_bulk_insert(meta, 'tbl', target_platform='sql_server_2022')
+    assert 'D:/data/files/test.csv' in sql
+    assert '\\\\' not in sql  # no double backslashes
+
+
+def test_windows_backslashes_normalized_in_openrowset():
+    """OPENROWSET for on-prem SQL Server should normalize backslashes."""
+    gen = SQLGenerator()
+    meta = {'file_type': 'csv', 'file_path': 'D:\\data\\test.csv',
+            'file_name': 'test.csv',
+            'delimiter': ',', 'has_header': True,
+            'encoding': 'utf-8', 'codepage': '65001',
+            'schema': [('a', 'int64')]}
+    sql = gen.generate_openrowset(meta, target_platform='sql_server_2022')
+    assert 'D:/data/test.csv' in sql
+
+
+# -------------------------------------------------------------------
 # generate_openrowset
 # -------------------------------------------------------------------
 
