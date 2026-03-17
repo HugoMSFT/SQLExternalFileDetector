@@ -305,6 +305,8 @@ def test_best_practices_csv():
     bp = gen.generate_best_practices(meta)
     assert 'BEST PRACTICES' in bp
     assert 'CSV' in bp
+    assert 'RECOMMENDED PATH' in bp
+    assert 'VALIDATION SQL AFTER LOAD' in bp
 
 
 def test_best_practices_parquet():
@@ -317,6 +319,43 @@ def test_best_practices_parquet():
     }
     bp = gen.generate_best_practices(meta)
     assert 'PARQUET' in bp
+
+
+def test_best_practices_warnings_for_nested_json_and_long_strings():
+    """Best practices should surface metadata-driven warnings."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'json',
+        'file_path': 'data.json',
+        'file_name': 'data.json',
+        'file_size': 2048,
+        'encoding': 'utf-8',
+        'encoding_confidence': 45,
+        'json_nesting': {'id': 'scalar', 'payload': 'object'},
+        'schema': [('id', 'int64'), ('payload', 'object'), ('notes', 'object')],
+        'max_string_lengths': {'notes': 5001},
+        'nullable_columns': ['id'],
+    }
+    bp = gen.generate_best_practices(meta, target_platform='fabric_sql_db')
+    assert 'WARNINGS / WATCH-OUTS' in bp
+    assert 'Nested JSON detected' in bp
+    assert 'Very long strings detected' in bp
+    assert 'Low encoding confidence' in bp
+
+
+def test_best_practices_validation_sql_uses_table_name():
+    """Best practices should include reusable post-load validation SQL."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'csv',
+        'file_path': 'sales_orders.csv',
+        'file_name': 'sales_orders.csv',
+        'file_size': 1024,
+        'schema': [('order_id', 'object'), ('customer_id', 'int64'), ('amount', 'float64')],
+    }
+    bp = gen.generate_best_practices(meta, target_platform='sql_server_2022')
+    assert 'SELECT COUNT(*) AS loaded_rows FROM [dbo].[sales_orders];' in bp
+    assert 'SELECT TOP 10 [order_id], [customer_id], [amount] FROM [dbo].[sales_orders];' in bp
 
 
 # -------------------------------------------------------------------
@@ -336,7 +375,7 @@ def test_all_statements_returns_all_keys():
     expected_keys = {
         'create_table', 'bulk_insert', 'openrowset',
         'external_file_format', 'create_external_table', 'best_practices',
-        'copy_into', 'credential_setup', 'json_functions', 'for_json',
+        'copy_into', 'json_functions', 'for_json',
     }
     assert set(stmts.keys()) == expected_keys
     for key, val in stmts.items():
@@ -595,6 +634,47 @@ def test_copy_into_not_on_sql_server():
     sql = gen.generate_copy_into(meta, 'tbl', target_platform='sql_server_2022')
     assert 'NOT AVAILABLE' in sql
     assert 'BULK INSERT' in sql or 'OPENROWSET' in sql  # alternatives shown
+
+
+def test_bulk_insert_fabric_sql_db_openrowset_fallbacks():
+    """Fabric SQL DB BULK INSERT guidance should include OPENROWSET load patterns."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'csv',
+        'file_path': 'x.csv',
+        'file_name': 'x.csv',
+        'delimiter': ',',
+        'has_header': True,
+    }
+    sql = gen.generate_bulk_insert(meta, target_platform='fabric_sql_db')
+    assert 'NOT AVAILABLE on Microsoft Fabric SQL Database' in sql
+    assert 'SELECT *' in sql and 'INTO [dbo].[stg_' in sql
+    assert 'INSERT INTO [dbo].[' in sql
+    assert 'FROM OPENROWSET(' in sql
+
+
+def test_copy_into_fabric_sql_db_alternatives():
+    """COPY INTO on Fabric SQL DB should provide practical alternatives."""
+    gen = SQLGenerator()
+    meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')]}
+    sql = gen.generate_copy_into(meta, target_platform='fabric_sql_db')
+    assert 'NOT AVAILABLE on Microsoft Fabric SQL Database' in sql
+    assert 'OPENROWSET' in sql
+    assert 'Data Pipelines' in sql or 'Dataflows' in sql
+
+
+def test_openrowset_available_on_fabric_sql_db():
+    """OPENROWSET should be generated for Fabric SQL DB."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'parquet',
+        'file_path': 'x.parquet',
+        'file_name': 'x.parquet',
+        'schema': [('id', 'int64')],
+    }
+    sql = gen.generate_openrowset(meta, target_platform='fabric_sql_db')
+    assert 'OPENROWSET' in sql
+    assert 'NOT AVAILABLE' not in sql
 
 
 def test_copy_into_on_fabric_dw():

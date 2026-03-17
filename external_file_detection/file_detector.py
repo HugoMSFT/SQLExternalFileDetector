@@ -5,6 +5,7 @@ import json
 import csv
 import logging
 import mimetypes
+from copy import deepcopy
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 import pandas as pd
@@ -64,7 +65,22 @@ class FileDetector:
 
     def __init__(self):
         """Initialize the file detector."""
-        pass
+        self._encoding_cache: Dict[Tuple[str, float, int], Tuple[str, float]] = {}
+        self._metadata_cache: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
+
+    def _get_file_signature(self, file_path: str) -> Optional[Tuple[str, float, int]]:
+        """Return a cache signature for a file or directory based on path + stat info."""
+        try:
+            stat = os.stat(file_path)
+            return (os.path.abspath(file_path), stat.st_mtime, stat.st_size)
+        except OSError:
+            return None
+
+    def is_delta_table_directory(self, directory_path: str) -> bool:
+        """Return True if *directory_path* looks like a Delta Lake table folder."""
+        if not os.path.isdir(directory_path):
+            return False
+        return os.path.isdir(os.path.join(directory_path, '_delta_log'))
 
     # ------------------------------------------------------------------
     # Type detection
@@ -72,10 +88,9 @@ class FileDetector:
 
     def detect_file_type(self, file_path: str) -> str:
         """Detect the type of a file based on extension and content analysis."""
-        # Delta table detection: directory with _delta_log subfolder
+        if self.is_delta_table_directory(file_path):
+            return 'delta'
         if os.path.isdir(file_path):
-            if os.path.isdir(os.path.join(file_path, '_delta_log')):
-                return 'delta'
             return 'unknown'
 
         path = Path(file_path)
@@ -126,6 +141,10 @@ class FileDetector:
 
     def detect_encoding(self, file_path: str) -> Tuple[str, float]:
         """Detect file encoding using chardet when available."""
+        signature = self._get_file_signature(file_path)
+        if signature and signature in self._encoding_cache:
+            return self._encoding_cache[signature]
+
         try:
             import chardet
             with open(file_path, 'rb') as f:
@@ -133,7 +152,10 @@ class FileDetector:
             result = chardet.detect(raw)
             encoding = (result.get('encoding') or 'utf-8').lower()
             confidence = float(result.get('confidence') or 0.0)
-            return encoding, confidence
+            detected = (encoding, confidence)
+            if signature:
+                self._encoding_cache[signature] = detected
+            return detected
         except ImportError:
             pass
 
@@ -141,10 +163,16 @@ class FileDetector:
             try:
                 with open(file_path, 'r', encoding=enc) as f:
                     f.read(4096)
-                return enc, 0.5
+                detected = (enc, 0.5)
+                if signature:
+                    self._encoding_cache[signature] = detected
+                return detected
             except (UnicodeDecodeError, LookupError):
                 continue
-        return 'utf-8', 0.0
+        detected = ('utf-8', 0.0)
+        if signature:
+            self._encoding_cache[signature] = detected
+        return detected
 
     def encoding_to_codepage(self, encoding: str) -> str:
         """Return the SQL Server codepage string for a given Python encoding name."""
@@ -157,6 +185,10 @@ class FileDetector:
 
     def analyze_file_metadata(self, file_path: str) -> Dict[str, Any]:
         """Analyse file metadata including schema, size, encoding and format details."""
+        signature = self._get_file_signature(file_path)
+        if signature and signature in self._metadata_cache:
+            return deepcopy(self._metadata_cache[signature])
+
         file_type = self.detect_file_type(file_path)
         if file_type in ('csv', 'text', 'json'):
             encoding, enc_confidence = self.detect_encoding(file_path)
@@ -208,6 +240,8 @@ class FileDetector:
         except Exception as e:
             metadata['error'] = str(e)
 
+        if signature:
+            self._metadata_cache[signature] = deepcopy(metadata)
         return metadata
 
     # ------------------------------------------------------------------
@@ -608,6 +642,24 @@ class FileDetector:
         results = []
         for root, dirs, files in os.walk(directory_path):
             dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+
+            # Recognize Delta table folders once at the directory level and avoid
+            # descending into their internals as separate file entries.
+            delta_dirs = []
+            remaining_dirs = []
+            for dirname in dirs:
+                candidate = os.path.join(root, dirname)
+                if self.is_delta_table_directory(candidate):
+                    delta_dirs.append(candidate)
+                else:
+                    remaining_dirs.append(dirname)
+
+            for delta_dir in delta_dirs:
+                metadata = self.analyze_file_metadata(delta_dir)
+                results.append(metadata)
+
+            dirs[:] = remaining_dirs
+
             for file in files:
                 file_path = os.path.join(root, file)
                 file_type = self.detect_file_type(file_path)

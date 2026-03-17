@@ -9,8 +9,12 @@ setup(
     install_requires=[
         "pandas>=1.5.0",
         "pyarrow>=10.0.0",
+        "boto3>=1.26.0",
+        "azure-storage-blob>=12.14.0",
+        "azure-identity>=1.12.0",
         "click>=8.1.0",
         "flask>=2.3.0",
+        "deltalake>=0.10.0",
         "chardet>=4.0.0",
         "openpyxl>=3.0.0",
     ],

@@ -38,6 +38,18 @@ class LocalStorageHandler(StorageHandler):
             return [path]
         
         for root, dirs, filenames in os.walk(path):
+            delta_dirs = []
+            remaining_dirs = []
+            for dirname in dirs:
+                full_dir = os.path.join(root, dirname)
+                if os.path.isdir(os.path.join(full_dir, '_delta_log')):
+                    delta_dirs.append(full_dir)
+                else:
+                    remaining_dirs.append(dirname)
+
+            files.extend(delta_dirs)
+            dirs[:] = remaining_dirs
+
             for filename in filenames:
                 files.append(os.path.join(root, filename))
         

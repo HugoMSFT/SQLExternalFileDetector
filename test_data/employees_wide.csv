@@ -1,0 +1,4 @@
+employee_id,first_name,last_name,department,title,salary,hire_date,is_active,office,country
+1001,Alice,Ng,Engineering,Senior Engineer,132500.75,2021-03-15,True,Seattle,USA
+1002,Bob,Patel,Finance,Analyst,91500.0,2022-09-01,True,London,UK
+1003,Carla,Meyer,Sales,Account Manager,105300.5,2020-11-20,False,Berlin,DE

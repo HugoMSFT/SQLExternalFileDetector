@@ -1,0 +1,4 @@
+order_id,customer_id,region,channel,item_count,subtotal,tax,shipping,total,order_ts
+SO-001,501,NA,online,3,89.9,7.19,4.99,102.08,2026-01-10T09:15:00Z
+SO-002,777,EU,partner,1,349.0,69.8,0.0,418.8,2026-01-11T14:42:00Z
+SO-003,321,APAC,retail,2,149.0,11.92,6.5,167.42,2026-01-12T18:05:00Z

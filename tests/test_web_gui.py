@@ -43,6 +43,8 @@ class TestWebGUI(unittest.TestCase):
         response = self.client.get('/')
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'External File Detection Tool', response.data)
+        self.assertIn(b'Best Practices', response.data)
+        self.assertNotIn(b'Credentials', response.data)
 
     def test_initial_path_api(self):
         """Test /api/initial_path returns a valid directory."""
@@ -260,9 +262,36 @@ class TestWebGUI(unittest.TestCase):
         self.assertTrue(data2['success'])
         stmts = data2.get('statements', {})
         self.assertIn('create_table', stmts)
+        self.assertIn('best_practices', stmts)
         self.assertIn('CREATE TABLE', stmts['create_table'])
+        self.assertIn('RECOMMENDED PATH', stmts['best_practices'])
+        self.assertIn('VALIDATION SQL AFTER LOAD', stmts['best_practices'])
         # SQL Server mode should NOT have DISTRIBUTION clause
         self.assertNotIn('DISTRIBUTION', stmts['create_table'])
+
+    def test_sql_ddl_api_best_practices_for_fabric(self):
+        """Best practices payload should include Fabric-specific guidance."""
+        json_path = os.path.join(self.test_root, 'fabric_payload.json')
+        with open(json_path, 'w') as f:
+            json.dump([{'id': 1, 'payload': {'x': 1}}], f)
+
+        try:
+            resp = self.client.post('/api/analyze_files', json={'files': [json_path]})
+            self.assertEqual(resp.status_code, 200)
+            stored_path = json.loads(resp.data)['files'][0]['file_path']
+
+            from urllib.parse import quote
+            resp2 = self.client.get(
+                '/api/sql_ddl/' + quote(stored_path, safe='') +
+                '?target_platform=fabric_sql_db&schema=dbo&data_source=DS')
+            self.assertEqual(resp2.status_code, 200)
+            data2 = json.loads(resp2.data)
+            self.assertTrue(data2['success'])
+            bp = data2['statements']['best_practices']
+            self.assertIn('Best option', bp)
+            self.assertIn('OPENROWSET', bp)
+        finally:
+            os.unlink(json_path)
 
     def test_preview_table_api(self):
         """Test /api/preview_table returns columnar data."""

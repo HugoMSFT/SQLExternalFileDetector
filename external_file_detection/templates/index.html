@@ -214,6 +214,32 @@
         .schema-editor-table select { min-width:140px; }
         .schema-editor-toolbar { padding:8px 0; display:flex; gap:8px; align-items:center; }
 
+        /* ---- best practices cards ---- */
+        .bp-layout { display:flex; flex-direction:column; gap:16px; }
+        .bp-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+        .bp-card {
+            background:#0f172a; border:1px solid #334155; border-radius:8px;
+            padding:14px;
+        }
+        .bp-card h3, .bp-card h4 { margin:0 0 10px; font-size:14px; color:#e2e8f0; }
+        .bp-card ul { margin:0; padding-left:18px; color:#cbd5e1; }
+        .bp-card li { margin:6px 0; font-size:13px; }
+        .bp-item-label { display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; margin-bottom:6px; }
+        .bp-item-value { color:#e2e8f0; font-size:13px; line-height:1.5; }
+        .bp-badge {
+            display:inline-block; padding:3px 8px; border-radius:999px; font-size:11px;
+            font-weight:700; margin-bottom:10px;
+        }
+        .bp-badge-rec { background:#1e3a5f; color:#93c5fd; }
+        .bp-badge-fast { background:#15311f; color:#86efac; }
+        .bp-badge-cost { background:#3b1f63; color:#d8b4fe; }
+        .bp-badge-risk { background:#422006; color:#fbbf24; }
+        .bp-code {
+            background:#020617; border:1px solid #1e293b; border-radius:6px; padding:12px;
+            font-family:'Cascadia Code','Fira Code',Consolas,monospace; font-size:12px; white-space:pre-wrap;
+            color:#e2e8f0;
+        }
+
         /* ---- second toolbar row ---- */
         .toolbar-row2 {
             padding: 6px 20px; background: #1a2236;
@@ -471,8 +497,10 @@ function loadSQL(f) {
     const ds = 'MyDataSource';
     const sc = 'dbo';
     const pl = document.getElementById('selPlatform').value || 'synapse_dedicated';
-    const tn = '';
-    const su = '';
+    const tnInput = document.getElementById('inpTableName');
+    const suInput = document.getElementById('inpStorageUrl');
+    const tn = tnInput ? tnInput.value || '' : '';
+    const su = suInput ? suInput.value || '' : '';
     const allPanes = ['create_table','bulk_insert','openrowset','ext_table','copy_into','json_functions','for_json','best_practices'];
     allPanes.forEach(k =>
         setPaneHTML(k, '<div class="placeholder"><span class="loading-spinner"></span> Generating&hellip;</div>')
@@ -515,6 +543,10 @@ function loadSQL(f) {
 
 function setSqlPane(key, sql) {
     const pane = document.getElementById('pane-' + key);
+    if (key === 'best_practices') {
+        pane.innerHTML = renderBestPractices(sql);
+        return;
+    }
     pane.innerHTML =
         '<div class="sql-block">' +
         '<div class="sql-toolbar">' +
@@ -524,6 +556,108 @@ function setSqlPane(key, sql) {
         '<code></code></div>';
     const code = pane.querySelector('code');
     code.innerHTML = highlightSQL(sql);
+}
+
+function renderBestPractices(sql) {
+    const parsed = parseBestPractices(sql || '');
+    let html = '<div class="bp-layout">';
+
+    if (parsed.summary.length) {
+        html += '<div class="bp-grid">';
+        parsed.summary.forEach(item => {
+            const badgeClass = ({'Best option':'bp-badge-rec','Fastest path':'bp-badge-fast','Lowest cost':'bp-badge-cost','Staging':'bp-badge-rec'})[item.label] || 'bp-badge-rec';
+            html += '<div class="bp-card">' +
+                '<div class="bp-badge ' + badgeClass + '">' + esc(item.label) + '</div>' +
+                '<div class="bp-item-value">' + esc(item.value) + '</div>' +
+                '</div>';
+        });
+        html += '</div>';
+    }
+
+    if (parsed.warnings.length) {
+        html += '<div class="bp-card"><div class="bp-badge bp-badge-risk">Watch-outs</div><h3>Risk checks</h3><ul>';
+        parsed.warnings.forEach(w => { html += '<li>' + esc(w) + '</li>'; });
+        html += '</ul></div>';
+    }
+
+    parsed.sections.forEach(section => {
+        html += '<div class="bp-card"><h3>' + esc(section.title) + '</h3><ul>';
+        section.items.forEach(item => { html += '<li>' + esc(item) + '</li>'; });
+        html += '</ul></div>';
+    });
+
+    if (parsed.validation.length) {
+        html += '<div class="bp-card"><h3>Validation SQL</h3><div class="bp-code">' + esc(parsed.validation.join('\n')) + '</div></div>';
+    }
+
+    if (!parsed.summary.length && !parsed.warnings.length && !parsed.sections.length && !parsed.validation.length) {
+        html += '<div class="sql-block"><code>' + highlightSQL(sql) + '</code></div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+function parseBestPractices(sql) {
+    const lines = String(sql || '').split(/\r?\n/);
+    const result = {summary: [], warnings: [], sections: [], validation: []};
+    let mode = 'other';
+    let currentSection = null;
+
+    function flushSection() {
+        if (currentSection && currentSection.items.length) result.sections.push(currentSection);
+        currentSection = null;
+    }
+
+    lines.forEach(line => {
+        const trimmed = line.trim();
+        const comment = trimmed.startsWith('--') ? trimmed.replace(/^--\s?/, '') : null;
+        if (!comment && trimmed) {
+            if (mode === 'validation') result.validation.push(line);
+            return;
+        }
+        if (!comment) return;
+        if (!comment || /^=+$/.test(comment)) return;
+
+        if (comment === 'RECOMMENDED PATH') {
+            flushSection();
+            mode = 'summary';
+            return;
+        }
+        if (comment === 'WARNINGS / WATCH-OUTS') {
+            flushSection();
+            mode = 'warnings';
+            return;
+        }
+        if (comment === 'VALIDATION SQL AFTER LOAD') {
+            flushSection();
+            mode = 'validation';
+            return;
+        }
+
+        if (/^\d+\.\s/.test(comment)) {
+            flushSection();
+            mode = 'section';
+            currentSection = {title: comment.replace(/^\d+\.\s*/, ''), items: []};
+            return;
+        }
+
+        if (mode === 'summary' && comment.includes(':')) {
+            const parts = comment.split(':');
+            result.summary.push({label: parts.shift().trim(), value: parts.join(':').trim()});
+            return;
+        }
+        if (mode === 'warnings') {
+            result.warnings.push(comment);
+            return;
+        }
+        if (mode === 'section' && currentSection) {
+            currentSection.items.push(comment);
+        }
+    });
+
+    flushSection();
+    return result;
 }
 
 /* ================================================================

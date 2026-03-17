@@ -1,0 +1,38 @@
+[
+  {
+    "customer_id": 501,
+    "name": "Contoso Ltd",
+    "tier": "gold",
+    "contacts": [
+      {
+        "name": "Ana",
+        "email": "ana@contoso.com"
+      },
+      {
+        "name": "Lee",
+        "email": "lee@contoso.com"
+      }
+    ],
+    "address": {
+      "city": "Seattle",
+      "country": "USA"
+    },
+    "active": true
+  },
+  {
+    "customer_id": 777,
+    "name": "Fabrikam GmbH",
+    "tier": "silver",
+    "contacts": [
+      {
+        "name": "Marta",
+        "email": "marta@fabrikam.de"
+      }
+    ],
+    "address": {
+      "city": "Berlin",
+      "country": "DE"
+    },
+    "active": true
+  }
+]

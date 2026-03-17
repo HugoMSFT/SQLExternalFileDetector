@@ -102,10 +102,10 @@ class SQLGenerator:
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
             'synapse_dedicated', 'synapse_serverless',
-            'fabric_dw',
+            'fabric_sql_db', 'fabric_dw',
         }),
         'openrowset_format_keyword': frozenset({ # OPENROWSET(BULK ..., FORMAT = ...)
-            'synapse_dedicated', 'synapse_serverless', 'fabric_dw',
+            'synapse_dedicated', 'synapse_serverless', 'fabric_sql_db', 'fabric_dw',
         }),
         'openrowset_bulk_local': frozenset({     # OPENROWSET(BULK '\\path')  local files
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
@@ -267,6 +267,42 @@ class SQLGenerator:
             target_platform = 'synapse_dedicated'
 
         if not self._supports('bulk_insert', target_platform):
+            if target_platform == 'fabric_sql_db':
+                file_name = metadata.get('file_name', metadata.get('file_path', 'file.csv'))
+                detected_type = metadata.get('file_type', 'csv').upper()
+                blob_path = f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
+                if not table_name:
+                    base = os.path.splitext(os.path.basename(metadata.get('file_path', 'file')))[0]
+                    table_name = _clean_identifier(base)
+
+                return '\n'.join([
+                    '-- ====================================================================',
+                    '-- BULK INSERT',
+                    '-- NOT AVAILABLE on Microsoft Fabric SQL Database',
+                    '-- ====================================================================',
+                    '-- Use OPENROWSET instead (Data Virtualization in Fabric SQL Database):',
+                    '-- https://learn.microsoft.com/en-us/fabric/database/sql/data-virtualization',
+                    '',
+                    '-- Option 1: SELECT INTO from OPENROWSET (creates a new table)',
+                    'SELECT *',
+                    f'INTO [dbo].[stg_{table_name}]',
+                    'FROM OPENROWSET(',
+                    f'    BULK \'{blob_path}\',',
+                    f"    FORMAT = '{_format_keyword(metadata.get('file_type', 'csv'))}'",
+                    ') AS src;',
+                    '',
+                    '-- Option 2: INSERT INTO from OPENROWSET (loads an existing table)',
+                    f'INSERT INTO [dbo].[{table_name}]',
+                    'SELECT *',
+                    'FROM OPENROWSET(',
+                    f'    BULK \'{blob_path}\',',
+                    f"    FORMAT = '{_format_keyword(metadata.get('file_type', 'csv'))}'",
+                    ') AS src;',
+                    '',
+                    f'-- Detected source type: {detected_type}',
+                    '-- For JSON payloads, combine OPENROWSET with OPENJSON (see JSON Functions tab).',
+                ])
+
             label = self.PLATFORM_LABELS.get(target_platform, target_platform)
             alts = []
             if self._supports('copy_into', target_platform):
@@ -810,8 +846,9 @@ class SQLGenerator:
                     '--    Use no-code/low-code options to ingest data from 100+ sources.',
                     '--    https://learn.microsoft.com/fabric/data-factory/',
                     '--',
-                    '-- Consider loading data via Fabric SQL Database\'s BULK INSERT or',
-                    '-- JSON functions (see BULK INSERT or JSON Functions tabs).',
+                    '-- In Fabric SQL Database, use OPENROWSET for external reads and',
+                    '-- INSERT INTO ... SELECT FROM OPENROWSET for loading.',
+                    '-- For JSON payloads, use OPENROWSET + OPENJSON (see JSON Functions tab).',
                 ])
             alts = []
             if self._supports('bulk_insert', target_platform):
@@ -875,6 +912,31 @@ class SQLGenerator:
             target_platform = 'synapse_dedicated'
 
         if not self._supports('copy_into', target_platform):
+            if target_platform in {
+                'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
+                'azure_sql_db', 'azure_sql_mi', 'fabric_sql_db'
+            }:
+                platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
+                lines = [
+                    '-- ====================================================================',
+                    '-- COPY INTO',
+                    f'-- NOT AVAILABLE on {platform_label}',
+                    '-- ====================================================================',
+                    '-- Recommended alternatives:',
+                ]
+                if self._supports('bulk_insert', target_platform):
+                    lines.append('-- 1. BULK INSERT for high-speed CSV/text ingestion (see BULK INSERT tab).')
+                if self._supports('openrowset', target_platform):
+                    lines += [
+                        '-- 2. OPENROWSET for ad-hoc reads and ELT patterns (see OPENROWSET tab).',
+                        '--    Use SELECT INTO or INSERT INTO ... SELECT FROM OPENROWSET for loading.',
+                    ]
+                if self._supports('json_openjson', target_platform):
+                    lines.append('-- 3. OPENJSON / JSON_VALUE for JSON ingestion (see JSON Functions tab).')
+                if target_platform == 'fabric_sql_db':
+                    lines.append('-- 4. Fabric Data Pipelines / Dataflows Gen2 for orchestrated ingestion.')
+                return '\n'.join(lines)
+
             alts = []
             if self._supports('bulk_insert', target_platform):
                 alts.append('BULK INSERT (see BULK INSERT tab)')
@@ -1361,6 +1423,7 @@ class SQLGenerator:
         size_label = f'{size_mb:.1f} MB'
 
         rows_label = f'{row_count:,}' if row_count else 'unknown'
+        default_table_name = _clean_identifier(os.path.splitext(file_name)[0] or 'data')
 
         lines = [
             '-- ====================================================================',
@@ -1373,6 +1436,11 @@ class SQLGenerator:
             '-- ====================================================================',
             '',
         ]
+
+        lines += _best_practices_summary(metadata, target_platform, size_mb)
+        warnings = _best_practices_warnings(metadata)
+        if warnings:
+            lines += warnings
 
         # Platform-specific loading recommendation
         load_methods = []
@@ -1408,6 +1476,8 @@ class SQLGenerator:
         else:
             lines += _best_practices_generic()
 
+        lines += _best_practices_validation_sql(metadata, default_table_name)
+
         return '\n'.join(lines)
 
     # ------------------------------------------------------------------
@@ -1433,7 +1503,7 @@ class SQLGenerator:
         """
         Return a dictionary with all generated SQL statement types:
             create_table, bulk_insert, openrowset, copy_into,
-            external_file_format, create_external_table, credential_setup,
+            external_file_format, create_external_table,
             json_functions, for_json, best_practices
         """
         if not table_name:
@@ -1460,8 +1530,6 @@ class SQLGenerator:
                 metadata, table_name, data_source, loc, fmt_name, schema_name,
                 target_platform=target_platform,
             ),
-            'credential_setup': self.generate_credential_setup(data_source, fmt_name, metadata,
-                                                               target_platform=target_platform),
             'json_functions': self.generate_json_functions(metadata, table_name, schema_name,
                                                           target_platform=target_platform),
             'for_json': self.generate_for_json_path(metadata, table_name, schema_name,
@@ -1609,6 +1677,115 @@ def _clean_identifier(name: str) -> str:
 def _format_keyword(file_type: str) -> str:
     return {'parquet': 'PARQUET', 'delta': 'DELTA', 'json': 'CSV',
             'orc': 'ORC'}.get(file_type, 'CSV')
+
+
+def _best_practices_summary(metadata: Dict[str, Any],
+                            target_platform: str,
+                            size_mb: float) -> List[str]:
+    file_type = metadata.get('file_type', 'csv')
+
+    recommended = 'CREATE TABLE + INSERT validation flow'
+    fastest = 'OPENROWSET for preview / exploratory access'
+    lowest_cost = 'OPENROWSET with projection/filtering'
+    staging = 'Load to a staging table first, then transform into the final schema'
+
+    if target_platform in {'synapse_dedicated', 'fabric_dw'}:
+        recommended = 'COPY INTO for loading, then validate in a typed table'
+        fastest = 'COPY INTO for bulk load throughput'
+        lowest_cost = 'OPENROWSET for selective reads before full load'
+    elif target_platform == 'synapse_serverless':
+        recommended = 'OPENROWSET for zero-copy querying'
+        fastest = 'OPENROWSET with column projection and filters'
+        lowest_cost = 'OPENROWSET over parquet/delta with partition pruning'
+        staging = 'Persist only curated datasets; keep exploration external'
+    elif target_platform == 'fabric_sql_db':
+        recommended = 'OPENROWSET with SELECT INTO / INSERT INTO ... SELECT'
+        fastest = 'OPENROWSET for direct external access'
+        lowest_cost = 'OPENROWSET over parquet with projected columns'
+    elif target_platform.startswith('sql_server_') or target_platform in {'azure_sql_db', 'azure_sql_mi'}:
+        if file_type in {'csv', 'text'}:
+            recommended = 'BULK INSERT for load, then validate in SQL'
+            fastest = 'BULK INSERT for local or staged CSV/text files'
+        elif file_type == 'json':
+            recommended = 'OPENJSON / OPENROWSET(SINGLE_CLOB) for controlled parsing'
+            fastest = 'OPENJSON after loading the file as NVARCHAR(MAX)'
+        elif file_type in {'parquet', 'delta'}:
+            recommended = 'Use OPENROWSET or convert to CSV/Parquet depending on platform limits'
+            fastest = 'OPENROWSET when supported; otherwise convert before load'
+
+    if size_mb > 512:
+        staging = 'For large files, land data in staging and validate in batches'
+    elif size_mb < 25:
+        staging = 'For small files, direct load is fine, but keep a validation query ready'
+
+    return [
+        '-- RECOMMENDED PATH',
+        f'--   Best option   : {recommended}',
+        f'--   Fastest path  : {fastest}',
+        f'--   Lowest cost   : {lowest_cost}',
+        f'--   Staging       : {staging}',
+        '',
+    ]
+
+
+def _best_practices_warnings(metadata: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+    encoding = metadata.get('encoding')
+    confidence = metadata.get('encoding_confidence')
+    file_type = metadata.get('file_type', 'csv')
+    json_nesting = metadata.get('json_nesting') or {}
+    max_lengths = metadata.get('max_string_lengths') or {}
+    nullable = set(metadata.get('nullable_columns') or [])
+    schema = metadata.get('schema') or []
+
+    if encoding and encoding != 'binary' and confidence is not None and confidence < 70:
+        warnings.append(f'--   Low encoding confidence ({confidence}%). Verify file encoding before loading.')
+    if metadata.get('row_count_estimated'):
+        warnings.append('--   Row count is estimated. Validate with a post-load COUNT(*) query.')
+    if file_type == 'json' and any(kind in {'object', 'array'} for kind in json_nesting.values()):
+        warnings.append('--   Nested JSON detected. Expect flattening or OPENJSON WITH (...) work before production load.')
+    if any(length > 4000 for length in max_lengths.values()):
+        warnings.append('--   Very long strings detected. Consider NVARCHAR(MAX) columns and downstream truncation checks.')
+
+    numeric_markers = ('int', 'float', 'double', 'decimal', 'numeric', 'real')
+    nullable_numeric = [name for name, dtype in schema if name in nullable and any(m in str(dtype).lower() for m in numeric_markers)]
+    if nullable_numeric:
+        warnings.append(f'--   Nullable numeric columns detected: {", ".join(nullable_numeric[:5])}. Stage as text if source quality is inconsistent.')
+
+    if not warnings:
+        return []
+
+    return ['-- WARNINGS / WATCH-OUTS', *warnings, '']
+
+
+def _best_practices_validation_sql(metadata: Dict[str, Any],
+                                   table_name: str) -> List[str]:
+    schema = metadata.get('schema') or []
+    cols = [_clean_identifier(col) for col, _ in schema[:3]]
+    select_cols = ', '.join(f'[{c}]' for c in cols) if cols else '*'
+
+    lines = [
+        '-- VALIDATION SQL AFTER LOAD',
+        f'-- 1. Row count',
+        f'SELECT COUNT(*) AS loaded_rows FROM [dbo].[{table_name}];',
+        '',
+        f'-- 2. Sample rows',
+        f'SELECT TOP 10 {select_cols} FROM [dbo].[{table_name}];',
+    ]
+
+    if cols:
+        null_checks = ', '.join(
+            f'SUM(CASE WHEN [{c}] IS NULL THEN 1 ELSE 0 END) AS [{c}_nulls]'
+            for c in cols
+        )
+        lines += [
+            '',
+            '-- 3. Null distribution check',
+            f'SELECT {null_checks} FROM [dbo].[{table_name}];',
+        ]
+
+    lines.append('')
+    return lines
 
 
 def _best_practices_csv(size_mb: float, encoding: str, delimiter: str,

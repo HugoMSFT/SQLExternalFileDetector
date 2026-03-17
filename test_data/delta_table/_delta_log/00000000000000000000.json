@@ -1,0 +1,3 @@
+{"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
+{"metaData": {"id": "sample-delta-table", "format": {"provider": "parquet", "options": {}}, "schemaString": "{\"type\": \"struct\", \"fields\": [{\"name\": \"id\", \"type\": \"long\", \"nullable\": false, \"metadata\": {}}, {\"name\": \"product\", \"type\": \"string\", \"nullable\": true, \"metadata\": {}}, {\"name\": \"price\", \"type\": \"double\", \"nullable\": true, \"metadata\": {}}, {\"name\": \"category\", \"type\": \"string\", \"nullable\": true, \"metadata\": {}}]}", "partitionColumns": [], "configuration": {}, "createdTime": 1760000000000}}
+{"add": {"path": "data/part-00000-00000.snappy.parquet", "size": 3253, "modificationTime": 1760000000000, "dataChange": true}}

@@ -1,0 +1,3 @@
+{"event_id": 1, "event_type": "login", "user_id": "u-100", "success": true, "ts": "2026-03-01T08:20:00Z"}
+{"event_id": 2, "event_type": "purchase", "user_id": "u-100", "success": true, "amount": 49.99, "ts": "2026-03-01T08:25:14Z"}
+{"event_id": 3, "event_type": "logout", "user_id": "u-100", "success": true, "ts": "2026-03-01T08:30:01Z"}

@@ -27,6 +27,14 @@ A comprehensive Python application that detects file types and generates SQL DDL
 pip install -e .
 ```
 
+The project also includes a minimal `pyproject.toml`, so standard modern Python build tooling works as expected.
+
+Optional Spark/Delta Spark support:
+
+```bash
+pip install -e .[spark]
+```
+
 ## Quick Start
 
 ### Analyze a local directory
@@ -46,6 +54,38 @@ external-file-detector analyze-files file1.csv file2.json --data-source MyDataSo
 ```bash
 external-file-detector generate-data-source MyDataSource s3 's3://my-bucket/data/' --credential MyCredential
 ```
+
+## Microsoft Fabric SQL Database Notes
+
+- `OPENROWSET` is available in Fabric SQL Database (Data Virtualization):
+  https://learn.microsoft.com/en-us/fabric/database/sql/data-virtualization
+- `BULK INSERT` is **not** available in Fabric SQL Database.
+- `COPY INTO` is **not** available in SQL Server, Azure SQL Database, Azure SQL Managed Instance, or Fabric SQL Database.
+
+Use `OPENROWSET`-based loading patterns instead:
+
+```sql
+-- 1) Create a new table from external data
+SELECT *
+INTO dbo.stg_sales
+FROM OPENROWSET(
+    BULK 'https://<storage_account>.dfs.core.windows.net/<container>/sales/*.parquet',
+    FORMAT = 'PARQUET'
+) AS src;
+
+-- 2) Insert into an existing table
+INSERT INTO dbo.sales (order_id, customer_id, amount, order_date)
+SELECT order_id, customer_id, amount, order_date
+FROM OPENROWSET(
+    BULK 'https://<storage_account>.dfs.core.windows.net/<container>/sales/*.parquet',
+    FORMAT = 'PARQUET'
+) AS src;
+```
+
+Other alternatives when `COPY INTO` is unavailable:
+- `BULK INSERT` (SQL Server / Azure SQL MI / Azure SQL DB where supported)
+- `OPENROWSET` + `OPENJSON` for JSON payloads
+- Fabric Data Pipelines / Dataflows Gen2 for orchestrated ingestion
 
 ## CLI Commands
 

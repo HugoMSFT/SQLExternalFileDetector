@@ -5,8 +5,11 @@ import tempfile
 import json
 import csv
 from pathlib import Path
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from external_file_detection.file_detector import FileDetector
+from external_file_detection.external_file_detector import ExternalFileDetectorApp
 
 
 def test_file_type_detection():
@@ -207,6 +210,93 @@ def test_nullable_column_detection():
         assert 'optional' in metadata.get('nullable_columns', [])
 
 
+def test_scan_directory_detects_delta_table_folder():
+    """Directory scan should treat a Delta table folder as one delta entry."""
+    detector = FileDetector()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        delta_dir = os.path.join(temp_dir, 'delta_table')
+        data_dir = os.path.join(delta_dir, 'data')
+        log_dir = os.path.join(delta_dir, '_delta_log')
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
+
+        table = pa.table({'id': [1, 2], 'name': ['Alice', 'Bob']})
+        pq.write_table(table, os.path.join(data_dir, 'part-00000.parquet'))
+
+        with open(os.path.join(log_dir, '00000000000000000000.json'), 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'metaData': {
+                    'id': 'sample-delta',
+                    'format': {'provider': 'parquet', 'options': {}},
+                    'schemaString': json.dumps({
+                        'type': 'struct',
+                        'fields': [
+                            {'name': 'id', 'type': 'long', 'nullable': True, 'metadata': {}},
+                            {'name': 'name', 'type': 'string', 'nullable': True, 'metadata': {}},
+                        ],
+                    }),
+                    'partitionColumns': [],
+                    'configuration': {},
+                    'createdTime': 1760000000000,
+                }
+            }) + '\n')
+
+        results = detector.scan_directory(temp_dir)
+
+        delta_results = [r for r in results if r['file_type'] == 'delta']
+        assert len(delta_results) == 1
+        assert delta_results[0]['file_path'] == delta_dir
+
+
+def test_supported_file_types_are_deduplicated():
+    """Supported file types exposed by the app should be unique and sorted."""
+    app = ExternalFileDetectorApp()
+    supported = app.get_supported_file_types()
+
+    assert supported == sorted(set(supported))
+    assert 'csv' in supported
+    assert supported.count('csv') == 1
+
+
+def test_analyze_location_uses_delta_folder_as_single_entry():
+    """App-level location analysis should include the Delta folder, not just inner parquet files."""
+    app = ExternalFileDetectorApp()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        delta_dir = os.path.join(temp_dir, 'delta_table')
+        data_dir = os.path.join(delta_dir, 'data')
+        log_dir = os.path.join(delta_dir, '_delta_log')
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
+
+        table = pa.table({'id': [1, 2], 'name': ['Alice', 'Bob']})
+        pq.write_table(table, os.path.join(data_dir, 'part-00000.parquet'))
+
+        with open(os.path.join(log_dir, '00000000000000000000.json'), 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'metaData': {
+                    'id': 'sample-delta',
+                    'format': {'provider': 'parquet', 'options': {}},
+                    'schemaString': json.dumps({
+                        'type': 'struct',
+                        'fields': [
+                            {'name': 'id', 'type': 'long', 'nullable': True, 'metadata': {}},
+                            {'name': 'name', 'type': 'string', 'nullable': True, 'metadata': {}},
+                        ],
+                    }),
+                    'partitionColumns': [],
+                    'configuration': {},
+                    'createdTime': 1760000000000,
+                }
+            }) + '\n')
+
+        results = app.analyze_location(temp_dir, data_source='DS')
+        assert results['files_found'] == 1
+        assert results['summary']['file_types']['delta'] == 1
+        assert results['files'][0]['metadata']['file_type'] == 'delta'
+
+
 if __name__ == '__main__':
     test_file_type_detection()
     test_csv_metadata_analysis()
@@ -220,4 +310,7 @@ if __name__ == '__main__':
     test_non_delta_directory()
     test_encoding_detection()
     test_nullable_column_detection()
+    test_scan_directory_detects_delta_table_folder()
+    test_supported_file_types_are_deduplicated()
+    test_analyze_location_uses_delta_folder_as_single_entry()
     print("All tests passed!")

@@ -257,4 +257,4 @@ class ExternalFileDetectorApp:
     
     def get_supported_file_types(self) -> List[str]:
         """Get list of supported file types."""
-        return list(self.file_detector.SUPPORTED_EXTENSIONS.values())
+        return sorted(set(self.file_detector.SUPPORTED_EXTENSIONS.values()))
