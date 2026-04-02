@@ -113,8 +113,8 @@ def test_web_gui_upload_analyze_sql_flow():
     # Get SQL DDL
     from urllib.parse import quote
     resp2 = client.get(
-        '/api/sql_ddl/' + quote(stored_path, safe='') +
-        '?target_platform=synapse_dedicated&data_source=TestDS')
+        '/api/sql_ddl/' + quote(stored_path.lstrip('/'), safe='/') +
+        '?target_platform=sql_server_2022&data_source=TestDS')
     assert resp2.status_code == 200
     data2 = json.loads(resp2.data)
     assert data2['success']

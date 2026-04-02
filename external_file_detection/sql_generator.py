@@ -1,4 +1,4 @@
-﻿"""SQL DDL generator for external file formats and tables."""
+"""SQL DDL generator for external file formats and tables."""
 
 import os
 import re
@@ -78,8 +78,7 @@ class SQLGenerator:
     PLATFORMS = (
         'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
         'azure_sql_db', 'azure_sql_mi',
-        'synapse_dedicated', 'synapse_serverless',
-        'fabric_sql_db', 'fabric_dw',
+        'fabric_sql_db',
     )
 
     # Feature availability per platform.
@@ -88,11 +87,10 @@ class SQLGenerator:
         'create_table': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_dedicated',
-            'fabric_sql_db', 'fabric_dw',
+            'fabric_sql_db',
         }),
         'distribution': frozenset({              # DISTRIBUTION clause in CREATE TABLE
-            'synapse_dedicated', 'fabric_dw',
+
         }),
         'bulk_insert': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
@@ -101,11 +99,11 @@ class SQLGenerator:
         'openrowset': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_dedicated', 'synapse_serverless',
-            'fabric_sql_db', 'fabric_dw',
+
+            'fabric_sql_db',
         }),
         'openrowset_format_keyword': frozenset({ # OPENROWSET(BULK ..., FORMAT = ...)
-            'synapse_dedicated', 'synapse_serverless', 'fabric_sql_db', 'fabric_dw',
+ 'fabric_sql_db',
         }),
         'openrowset_bulk_local': frozenset({     # OPENROWSET(BULK '\\path')  local files
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
@@ -115,39 +113,31 @@ class SQLGenerator:
         }),
         'external_table': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
-            'synapse_dedicated', 'synapse_serverless',
-            'fabric_dw',
+
         }),
-        'copy_into': frozenset({
-            'synapse_dedicated', 'fabric_dw',
-        }),
+        'copy_into': frozenset(),
         'credential_setup': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
-            'synapse_dedicated', 'synapse_serverless',
-            'fabric_dw',
+
         }),
         'json_openjson': frozenset({             # OPENJSON, JSON_VALUE, JSON_QUERY, ISJSON
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_serverless',
             'fabric_sql_db',
         }),
         'json_path_exists': frozenset({          # JSON_PATH_EXISTS  (SQL Server 2022+)
             'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_serverless',
             'fabric_sql_db',
         }),
         'json_object_array': frozenset({         # JSON_OBJECT / JSON_ARRAY  (SQL Server 2022+)
             'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_serverless',
             'fabric_sql_db',
         }),
         'for_json': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-            'synapse_serverless',
             'fabric_sql_db',
         }),
     }
@@ -159,10 +149,7 @@ class SQLGenerator:
         'sql_server_2025': 'SQL Server 2025',
         'azure_sql_db': 'Azure SQL Database',
         'azure_sql_mi': 'Azure SQL Managed Instance',
-        'synapse_dedicated': 'Azure Synapse Dedicated Pool',
-        'synapse_serverless': 'Azure Synapse Serverless',
         'fabric_sql_db': 'Microsoft Fabric SQL Database',
-        'fabric_dw': 'Microsoft Fabric Data Warehouse',
     }
 
     def _supports(self, feature: str, platform: str) -> bool:
@@ -184,10 +171,6 @@ class SQLGenerator:
             lines.append(f'-- {alternatives}')
         return '\n'.join(lines)
 
-    def __init__(self):
-        """Initialize the SQL generator."""
-        pass
-
     # ------------------------------------------------------------------
     # CREATE TABLE
     # ------------------------------------------------------------------
@@ -195,7 +178,7 @@ class SQLGenerator:
     def generate_create_table(self, metadata: Dict[str, Any],
                               table_name: str = None,
                               schema_name: str = 'dbo',
-                              target_platform: str = 'synapse_dedicated') -> str:
+                              target_platform: str = 'sql_server_2022') -> str:
         """
         Generate a standard CREATE TABLE statement.
 
@@ -204,7 +187,7 @@ class SQLGenerator:
         Nullable columns (detected from sample data) use NULL; others use NOT NULL.
         """
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('create_table', target_platform):
             return self._not_supported_message(
@@ -245,11 +228,31 @@ class SQLGenerator:
                 f'    HEAP                           -- Change to CLUSTERED COLUMNSTORE INDEX for analytics',
                 f');',
             ]
-        elif target_platform == 'synapse_serverless':
-            lines.append(f';  -- Synapse Serverless uses external tables; see EXT TABLE tab')
         else:
             # SQL Server / Azure SQL Database / MI / Fabric SQL DB
             lines.append(f';')
+
+        # Append sample data as comments
+        lines += self._format_sample_rows(metadata)
+
+        # Append a commented-out INSERT INTO...SELECT FROM OPENROWSET as a quick-start
+        file_name = metadata.get('file_name', metadata['file_path'])
+        file_type = metadata.get('file_type', 'csv')
+        blob_path = f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
+        format_kw = _format_keyword(file_type)
+
+        lines += [
+            '',
+            '-- ====================================================================',
+            '-- QUICK LOAD: INSERT INTO from OPENROWSET  (uncomment & customise)',
+            '-- ====================================================================',
+            f'-- INSERT INTO [{schema_name}].[{table_name}]',
+            f'-- SELECT *',
+            f'-- FROM OPENROWSET(',
+            f'--     BULK \'{blob_path}\',',
+            f'--     FORMAT = \'{format_kw}\'',
+            f'-- ) AS src;',
+        ]
 
         return '\n'.join(lines)
 
@@ -261,10 +264,10 @@ class SQLGenerator:
                              table_name: str = None,
                              schema_name: str = 'dbo',
                              file_path_override: str = None,
-                             target_platform: str = 'synapse_dedicated') -> str:
+                             target_platform: str = 'sql_server_2022') -> str:
         """Generate a BULK INSERT statement (CSV / delimited text files only)."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('bulk_insert', target_platform):
             if target_platform == 'fabric_sql_db':
@@ -385,13 +388,13 @@ class SQLGenerator:
     def generate_openrowset(self, metadata: Dict[str, Any],
                             storage_url: str = None,
                             credential_name: str = 'MyStorageCredential',
-                            target_platform: str = 'synapse_dedicated') -> str:
+                            target_platform: str = 'sql_server_2022') -> str:
         """
         Generate OPENROWSET queries.
         Supports CSV, Parquet, Delta, JSON.
         """
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('openrowset', target_platform):
             alts = []
@@ -755,10 +758,10 @@ class SQLGenerator:
 
     def generate_external_file_format(self, metadata: Dict[str, Any],
                                       format_name: str = None,
-                                      target_platform: str = 'synapse_dedicated') -> str:
+                                      target_platform: str = 'sql_server_2022') -> str:
         """Generate CREATE EXTERNAL FILE FORMAT statement."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('external_table', target_platform):
             return self._not_supported_message(
@@ -813,10 +816,10 @@ class SQLGenerator:
                                 location: str = None,
                                 file_format: str = None,
                                 schema_name: str = 'dbo',
-                                target_platform: str = 'synapse_dedicated') -> str:
+                                target_platform: str = 'sql_server_2022') -> str:
         """Generate CREATE EXTERNAL TABLE statement (PolyBase / Synapse)."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('external_table', target_platform):
             # Fabric SQL DB — cannot use external tables but has alternatives
@@ -906,10 +909,10 @@ class SQLGenerator:
                            table_name: str = None,
                            schema_name: str = 'dbo',
                            storage_url: str = None,
-                           target_platform: str = 'synapse_dedicated') -> str:
+                           target_platform: str = 'sql_server_2022') -> str:
         """Generate a COPY INTO statement (Synapse Dedicated Pool / Fabric DW)."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('copy_into', target_platform):
             if target_platform in {
@@ -1033,11 +1036,11 @@ class SQLGenerator:
     def generate_credential_setup(self, data_source: str = 'MyDataSource',
                                   file_format: str = 'ff_csv_format',
                                   metadata: Dict[str, Any] = None,
-                                  target_platform: str = 'synapse_dedicated') -> str:
+                                  target_platform: str = 'sql_server_2022') -> str:
         """Generate prerequisite CREATE CREDENTIAL, CREATE EXTERNAL DATA SOURCE,
         and CREATE EXTERNAL FILE FORMAT statements."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('credential_setup', target_platform):
             return self._not_supported_message(
@@ -1100,10 +1103,10 @@ class SQLGenerator:
     def generate_json_functions(self, metadata: Dict[str, Any],
                                 table_name: str = None,
                                 schema_name: str = 'dbo',
-                                target_platform: str = 'synapse_dedicated') -> str:
+                                target_platform: str = 'sql_server_2022') -> str:
         """Generate comprehensive T-SQL JSON function examples using the file's real schema."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('json_openjson', target_platform):
             alts = []
@@ -1315,10 +1318,10 @@ class SQLGenerator:
     def generate_for_json_path(self, metadata: Dict[str, Any],
                                table_name: str = None,
                                schema_name: str = 'dbo',
-                               target_platform: str = 'synapse_dedicated') -> str:
+                               target_platform: str = 'sql_server_2022') -> str:
         """Generate FOR JSON PATH examples for SQL-to-JSON export."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         if not self._supports('for_json', target_platform):
             return self._not_supported_message(
@@ -1404,10 +1407,10 @@ class SQLGenerator:
     # ------------------------------------------------------------------
 
     def generate_best_practices(self, metadata: Dict[str, Any],
-                                target_platform: str = 'synapse_dedicated') -> str:
+                                target_platform: str = 'sql_server_2022') -> str:
         """Generate a best-practices guide for ingesting / querying this file type."""
         if target_platform not in self.PLATFORMS:
-            target_platform = 'synapse_dedicated'
+            target_platform = 'sql_server_2022'
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         file_type = metadata.get('file_type', 'csv')
@@ -1422,7 +1425,7 @@ class SQLGenerator:
         size_mb = (size_bytes or 0) / 1024 / 1024
         size_label = f'{size_mb:.1f} MB'
 
-        rows_label = f'{row_count:,}' if row_count else 'unknown'
+        rows_label = f'{row_count:}' if row_count else 'unknown'
         default_table_name = _clean_identifier(os.path.splitext(file_name)[0] or 'data')
 
         lines = [
@@ -1498,7 +1501,7 @@ class SQLGenerator:
                                 data_source: str = 'MyDataSource',
                                 location: str = None,
                                 schema_name: str = 'dbo',
-                                target_platform: str = 'synapse_dedicated',
+                                target_platform: str = 'sql_server_2022',
                                 storage_url: str = None) -> Dict[str, str]:
         """
         Return a dictionary with all generated SQL statement types:
@@ -1534,9 +1537,60 @@ class SQLGenerator:
                                                           target_platform=target_platform),
             'for_json': self.generate_for_json_path(metadata, table_name, schema_name,
                                                     target_platform=target_platform),
+            'credential_setup': self.generate_credential_setup(data_source, fmt_name,
+                                                               metadata=metadata,
+                                                               target_platform=target_platform),
             'best_practices': self.generate_best_practices(metadata,
                                                            target_platform=target_platform),
         }
+
+    # ------------------------------------------------------------------
+    # Sample data comments
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_sample_rows(metadata: Dict[str, Any]) -> List[str]:
+        """Return sample data rows as SQL comments for context."""
+        sample_rows = metadata.get('sample_rows')
+        schema = metadata.get('schema')
+        json_samples = metadata.get('json_sample_values')
+
+        if not schema:
+            return []
+
+        lines: List[str] = []
+
+        # For CSV/Excel with sample_rows
+        if sample_rows and len(sample_rows) > 0:
+            col_names = [c[0] for c in schema]
+            # Truncate wide tables to first 8 columns for readability
+            max_display = 8
+            truncated = len(col_names) > max_display
+            display_cols = col_names[:max_display]
+            lines.append('')
+            lines.append('-- Sample data (first rows from file):')
+            header = ' | '.join(str(n)[:20] for n in display_cols)
+            if truncated:
+                header += f' | ... ({len(col_names) - max_display} more)'
+            lines.append(f'-- {header}')
+            lines.append(f'-- {"-" * len(header)}')
+            for row in sample_rows[:3]:
+                display_vals = row[:max_display]
+                vals = ' | '.join(str(v if v is not None else 'NULL')[:20] for v in display_vals)
+                if truncated:
+                    vals += ' | ...'
+                lines.append(f'-- {vals}')
+
+        # For JSON with json_sample_values
+        elif json_samples:
+            lines.append('')
+            lines.append('-- Sample data (first record):')
+            for col_name, _ in schema[:10]:
+                val = json_samples.get(col_name, '')
+                val_str = str(val)[:60]
+                lines.append(f'--   {col_name}: {val_str}')
+
+        return lines
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1689,16 +1743,7 @@ def _best_practices_summary(metadata: Dict[str, Any],
     lowest_cost = 'OPENROWSET with projection/filtering'
     staging = 'Load to a staging table first, then transform into the final schema'
 
-    if target_platform in {'synapse_dedicated', 'fabric_dw'}:
-        recommended = 'COPY INTO for loading, then validate in a typed table'
-        fastest = 'COPY INTO for bulk load throughput'
-        lowest_cost = 'OPENROWSET for selective reads before full load'
-    elif target_platform == 'synapse_serverless':
-        recommended = 'OPENROWSET for zero-copy querying'
-        fastest = 'OPENROWSET with column projection and filters'
-        lowest_cost = 'OPENROWSET over parquet/delta with partition pruning'
-        staging = 'Persist only curated datasets; keep exploration external'
-    elif target_platform == 'fabric_sql_db':
+    if target_platform == 'fabric_sql_db':
         recommended = 'OPENROWSET with SELECT INTO / INSERT INTO ... SELECT'
         fastest = 'OPENROWSET for direct external access'
         lowest_cost = 'OPENROWSET over parquet with projected columns'

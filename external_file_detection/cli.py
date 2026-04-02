@@ -8,12 +8,13 @@ import logging
 from typing import Dict, Any
 
 from .external_file_detector import ExternalFileDetectorApp
+from . import __version__
 
 logger = logging.getLogger(__name__)
 
 
 @click.group()
-@click.version_option(version="1.0.0")
+@click.version_option(version=__version__)
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 def main(verbose):
     """External File Detector - Detect file types and generate SQL DDL."""
@@ -28,11 +29,12 @@ def main(verbose):
 @click.option('--host', default='127.0.0.1', help='Host to bind to')
 @click.option('--port', default=5000, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def gui(host, port, debug):
+@click.option('--root-dir', default=None, help='Restrict file browsing to this directory tree')
+def gui(host, port, debug, root_dir):
     """Launch the web-based graphical user interface."""
     try:
         from .web_gui import ExternalFileDetectionWebGUI
-        app = ExternalFileDetectionWebGUI()
+        app = ExternalFileDetectionWebGUI(root_dir=root_dir)
         app.run(host=host, port=port, debug=debug)
     except ImportError as e:
         click.echo(f"Error: Could not launch web GUI: {e}")

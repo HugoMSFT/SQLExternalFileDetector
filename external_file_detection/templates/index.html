@@ -1,1003 +1,1848 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>External File Detection Tool</title>
     <style>
-        *, *::before, *::after { box-sizing: border-box; }
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0; padding: 20px;
-            background: #0f172a; color: #e2e8f0;
+            margin: 0;
+            padding: 20px;
+            background: #0f172a;
+            color: #e2e8f0;
         }
+
         .container {
-            max-width: 1500px; margin: 0 auto;
-            background: #1e293b; border-radius: 10px;
-            box-shadow: 0 4px 20px rgba(0,0,0,.4);
-            overflow: hidden; display: flex; flex-direction: column;
+            max-width: 1500px;
+            margin: 0 auto;
+            background: #1e293b;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, .4);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
             height: calc(100vh - 40px);
         }
+
         /* ---- header ---- */
         .header {
             background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
-            color: #fff; padding: 16px 24px;
-            display: flex; align-items: center; gap: 16px;
+            color: #fff;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
         }
-        .header h1 { margin:0; font-size:22px; }
-        .header .subtitle { opacity:.75; font-size:13px; }
+
+        .header h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+
+        .header .subtitle {
+            opacity: .75;
+            font-size: 13px;
+        }
 
         /* ---- toolbar ---- */
         .toolbar {
-            padding: 12px 20px; background: #1a2236;
+            padding: 12px 20px;
+            background: #1a2236;
             border-bottom: 1px solid #334155;
-            display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
         }
+
         .btn {
-            padding: 7px 14px; border: 1px solid #475569;
-            border-radius: 6px; background: #334155; color: #e2e8f0;
-            cursor: pointer; font-size: 13px; white-space: nowrap;
+            padding: 7px 14px;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            background: #334155;
+            color: #e2e8f0;
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
         }
-        .btn:hover { background: #475569; }
-        .btn-primary { background: #2563eb; border-color: #2563eb; color:#fff; }
-        .btn-primary:hover { background: #1d4ed8; }
-        .btn-sm { padding: 4px 10px; font-size: 12px; }
-        .input-group { display:flex; align-items:center; gap:6px; }
-        .input-group label { font-size:13px; color:#94a3b8; }
-        .input-group input, .input-group select {
-            padding:5px 10px; border:1px solid #475569; border-radius:4px;
-            background:#0f172a; color:#e2e8f0; font-size:13px;
+
+        .btn:hover {
+            background: #475569;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            border-color: #2563eb;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+        }
+
+        .btn-sm {
+            padding: 4px 10px;
+            font-size: 12px;
+        }
+
+        .input-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 13px;
+            color: #94a3b8;
+        }
+
+        .input-group input,
+        .input-group select {
+            padding: 5px 10px;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            background: #0f172a;
+            color: #e2e8f0;
+            font-size: 13px;
         }
 
         /* ---- main layout ---- */
-        .main-content { display:flex; flex:1; overflow:hidden; }
-        .sidebar {
-            width:320px; min-width:280px; border-right:1px solid #334155;
-            overflow-y:auto; background:#1a2236;
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
         }
-        .content-area { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+
+        .sidebar {
+            width: 320px;
+            min-width: 280px;
+            border-right: 1px solid #334155;
+            overflow-y: auto;
+            background: #1a2236;
+        }
+
+        .content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
 
         /* ---- tabs ---- */
         .tabs {
-            display:flex; border-bottom:1px solid #334155;
-            background:#1a2236; overflow-x:auto;
+            display: flex;
+            border-bottom: 1px solid #334155;
+            background: #1a2236;
+            overflow-x: auto;
         }
+
         .tab {
-            padding:10px 16px; cursor:pointer; font-size:13px;
-            border-bottom:2px solid transparent; color:#94a3b8;
-            white-space:nowrap; user-select:none;
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 2px solid transparent;
+            color: #94a3b8;
+            white-space: nowrap;
+            user-select: none;
         }
-        .tab:hover { color:#e2e8f0; background:rgba(255,255,255,.04); }
-        .tab.active { border-bottom-color:#2563eb; color:#e2e8f0; background:rgba(37,99,235,.1); }
-        .tab-content { flex:1; overflow:auto; padding:16px; }
-        .tab-pane { display:none; height:100%; }
-        .tab-pane.active { display:block; }
+
+        .tab:hover {
+            color: #e2e8f0;
+            background: rgba(255, 255, 255, .04);
+        }
+
+        .tab.active {
+            border-bottom-color: #2563eb;
+            color: #e2e8f0;
+            background: rgba(37, 99, 235, .1);
+        }
+
+        .tab-content {
+            flex: 1;
+            overflow: auto;
+            padding: 16px;
+        }
+
+        .tab-pane {
+            display: none;
+            height: 100%;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
 
         /* ---- file list ---- */
         .file-item {
-            padding:10px 16px; border-bottom:1px solid #1e293b;
-            cursor:pointer; display:flex; justify-content:space-between;
-            align-items:center; gap:8px;
+            padding: 10px 16px;
+            border-bottom: 1px solid #1e293b;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
         }
-        .file-item:hover { background:#253348; }
-        .file-item.selected { background:rgba(37,99,235,.15); border-left:3px solid #2563eb; }
-        .file-info { flex:1; min-width:0; }
-        .file-name { font-weight:500; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .file-meta { font-size:11px; color:#64748b; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+        .file-item:hover {
+            background: #253348;
+        }
+
+        .file-item.selected {
+            background: rgba(37, 99, 235, .15);
+            border-left: 3px solid #2563eb;
+        }
+
+        .file-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .file-name {
+            font-weight: 500;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-meta {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .btn-remove-file {
+            background: none;
+            border: none;
+            color: #64748b;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            opacity: 0;
+            transition: opacity .15s;
+        }
+
+        .file-item:hover .btn-remove-file {
+            opacity: 1;
+        }
+
+        .btn-remove-file:hover {
+            color: #f87171;
+            background: rgba(248, 113, 113, .15);
+        }
+
         .badge {
-            padding:2px 8px; border-radius:10px; font-size:10px;
-            font-weight:600; text-transform:uppercase; flex-shrink:0;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            flex-shrink: 0;
         }
-        .badge-csv    { background:#1e3a5f; color:#60a5fa; }
-        .badge-json   { background:#3b1f63; color:#c084fc; }
-        .badge-parquet{ background:#14432a; color:#4ade80; }
-        .badge-delta  { background:#422006; color:#fbbf24; }
-        .badge-text   { background:#334155; color:#94a3b8; }
-        .badge-error  { background:#450a0a; color:#f87171; }
+
+        .badge-csv {
+            background: #1e3a5f;
+            color: #60a5fa;
+        }
+
+        .badge-json {
+            background: #3b1f63;
+            color: #c084fc;
+        }
+
+        .badge-parquet {
+            background: #14432a;
+            color: #4ade80;
+        }
+
+        .badge-delta {
+            background: #422006;
+            color: #fbbf24;
+        }
+
+        .badge-iceberg {
+            background: #1e3a5f;
+            color: #93c5fd;
+        }
+
+        .badge-text {
+            background: #334155;
+            color: #94a3b8;
+        }
+
+        .badge-error {
+            background: #450a0a;
+            color: #f87171;
+        }
 
         /* ---- data grid ---- */
-        .data-grid-wrapper { overflow:auto; max-height:100%; border:1px solid #334155; border-radius:6px; }
+        .data-grid-wrapper {
+            overflow: auto;
+            max-height: 100%;
+            border: 1px solid #334155;
+            border-radius: 6px;
+        }
+
         .data-grid {
-            width:100%; border-collapse:collapse; font-size:12px;
-            font-family:'Cascadia Code','Fira Code',Consolas,monospace;
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
         }
+
         .data-grid th {
-            position:sticky; top:0; background:#1a2236; color:#94a3b8;
-            padding:6px 10px; text-align:left; border-bottom:2px solid #334155;
-            font-weight:600; white-space:nowrap;
+            position: sticky;
+            top: 0;
+            background: #1a2236;
+            color: #94a3b8;
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 2px solid #334155;
+            font-weight: 600;
+            white-space: nowrap;
         }
+
         .data-grid td {
-            padding:5px 10px; border-bottom:1px solid #1e293b;
-            white-space:nowrap; max-width:300px; overflow:hidden; text-overflow:ellipsis;
+            padding: 5px 10px;
+            border-bottom: 1px solid #1e293b;
+            white-space: nowrap;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        .data-grid tr:hover td { background:rgba(255,255,255,.03); }
-        .data-grid .col-type { color:#64748b; font-size:10px; display:block; }
+
+        .data-grid tr:hover td {
+            background: rgba(255, 255, 255, .03);
+        }
+
+        .data-grid .col-type {
+            color: #64748b;
+            font-size: 10px;
+            display: block;
+        }
 
         /* ---- SQL code block ---- */
         .sql-block {
-            background:#0f172a; border:1px solid #334155; border-radius:6px;
-            padding:16px; font-family:'Cascadia Code','Fira Code',Consolas,monospace;
-            font-size:13px; line-height:1.6; white-space:pre-wrap;
-            overflow-y:auto; max-height:100%; color:#e2e8f0; position:relative;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 16px;
+            font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            max-height: 100%;
+            color: #e2e8f0;
+            position: relative;
         }
-        .sql-block .kw  { color:#c084fc; }
-        .sql-block .fn  { color:#f472b6; }
-        .sql-block .str { color:#4ade80; }
-        .sql-block .num { color:#fbbf24; }
-        .sql-block .cmt { color:#64748b; font-style:italic; }
-        .sql-block .op  { color:#60a5fa; }
+
+        .sql-block .kw {
+            color: #c084fc;
+        }
+
+        .sql-block .fn {
+            color: #f472b6;
+        }
+
+        .sql-block .str {
+            color: #4ade80;
+        }
+
+        .sql-block .num {
+            color: #fbbf24;
+        }
+
+        .sql-block .cmt {
+            color: #64748b;
+            font-style: italic;
+        }
+
+        .sql-block .op {
+            color: #60a5fa;
+        }
+
         .copy-float {
-            position:absolute; top:8px; right:8px;
-            opacity:.5; transition:opacity .2s;
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            opacity: .5;
+            transition: opacity .2s;
         }
-        .copy-float:hover { opacity:1; }
+
+        .copy-float:hover {
+            opacity: 1;
+        }
 
         /* ---- metadata table ---- */
-        .meta-table { width:100%; border-collapse:collapse; }
-        .meta-table th, .meta-table td {
-            padding:8px 12px; text-align:left; font-size:13px;
-            border-bottom:1px solid #1e293b;
+        .meta-table {
+            width: 100%;
+            border-collapse: collapse;
         }
-        .meta-table th { color:#94a3b8; font-weight:500; width:180px; }
-        .meta-table td { color:#e2e8f0; }
-        .schema-table { width:100%; border-collapse:collapse; margin-top:16px; }
+
+        .meta-table th,
+        .meta-table td {
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 13px;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .meta-table th {
+            color: #94a3b8;
+            font-weight: 500;
+            width: 180px;
+        }
+
+        .meta-table td {
+            color: #e2e8f0;
+        }
+
+        .schema-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+
         .schema-table th {
-            background:#1a2236; color:#94a3b8; padding:6px 12px;
-            text-align:left; font-size:12px; border-bottom:2px solid #334155;
+            background: #1a2236;
+            color: #94a3b8;
+            padding: 6px 12px;
+            text-align: left;
+            font-size: 12px;
+            border-bottom: 2px solid #334155;
         }
-        .schema-table td { padding:5px 12px; font-size:13px; border-bottom:1px solid #1e293b; }
+
+        .schema-table td {
+            padding: 5px 12px;
+            font-size: 13px;
+            border-bottom: 1px solid #1e293b;
+        }
 
         /* ---- status bar ---- */
         .status-bar {
-            padding:8px 20px; background:#1a2236;
-            border-top:1px solid #334155; font-size:12px; color:#64748b;
-            display:flex; justify-content:space-between;
+            padding: 8px 20px;
+            background: #1a2236;
+            border-top: 1px solid #334155;
+            font-size: 12px;
+            color: #64748b;
+            display: flex;
+            justify-content: space-between;
         }
 
         /* ---- modal ---- */
         .modal-overlay {
-            position:fixed; inset:0; background:rgba(0,0,0,.6);
-            z-index:1000; display:flex; align-items:center; justify-content:center;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, .6);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
+
         .modal {
-            background:#1e293b; border-radius:10px; width:640px;
-            max-height:80vh; display:flex; flex-direction:column;
-            border:1px solid #334155;
+            background: #1e293b;
+            border-radius: 10px;
+            width: 640px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #334155;
         }
-        .modal-header { padding:16px 20px; border-bottom:1px solid #334155; }
-        .modal-header h2 { margin:0; font-size:18px; }
-        .modal-body { flex:1; overflow-y:auto; }
-        .modal-footer { padding:12px 20px; border-top:1px solid #334155; display:flex; gap:8px; justify-content:flex-end; }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 18px;
+        }
+
+        .modal-body {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .modal-footer {
+            padding: 12px 20px;
+            border-top: 1px solid #334155;
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
 
         .browser-item {
-            padding:8px 14px; border-bottom:1px solid #0f172a;
-            cursor:pointer; display:flex; align-items:center; gap:8px; font-size:13px;
+            padding: 8px 14px;
+            border-bottom: 1px solid #0f172a;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
         }
-        .browser-item:hover { background:#253348; }
-        .browser-item.dir { font-weight:500; }
-        .browser-item input[type=checkbox] { accent-color:#2563eb; }
-        .browser-path { font-size:12px; color:#64748b; margin-top:6px; word-break:break-all; }
 
-        .placeholder { text-align:center; padding:60px 20px; color:#475569; font-size:14px; }
-        .hidden { display:none!important; }
-        .loading-spinner { display:inline-block; width:14px; height:14px; border:2px solid #475569; border-top-color:#2563eb; border-radius:50%; animation:spin .6s linear infinite; }
-        @keyframes spin { to { transform:rotate(360deg); } }
+        .browser-item:hover {
+            background: #253348;
+        }
+
+        .browser-item.dir {
+            font-weight: 500;
+        }
+
+        .browser-item input[type=checkbox] {
+            accent-color: #2563eb;
+        }
+
+        .browser-path {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 6px;
+            word-break: break-all;
+        }
+
+        .placeholder {
+            text-align: center;
+            padding: 60px 20px;
+            color: #475569;
+            font-size: 14px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #475569;
+            border-top-color: #2563eb;
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
 
         /* ---- drag-drop overlay ---- */
         .drop-zone {
-            border:2px dashed #475569; border-radius:8px; padding:30px 16px;
-            text-align:center; color:#64748b; font-size:13px;
-            margin:8px; transition:all .2s;
+            border: 2px dashed #475569;
+            border-radius: 8px;
+            padding: 30px 16px;
+            text-align: center;
+            color: #64748b;
+            font-size: 13px;
+            margin: 8px;
+            transition: all .2s;
         }
-        .drop-zone.active { border-color:#2563eb; background:rgba(37,99,235,.08); color:#93c5fd; }
-        .sidebar.drag-over { background:rgba(37,99,235,.06); }
+
+        .drop-zone.active {
+            border-color: #2563eb;
+            background: rgba(37, 99, 235, .08);
+            color: #93c5fd;
+        }
+
+        .sidebar.drag-over {
+            background: rgba(37, 99, 235, .06);
+        }
 
         /* ---- sql toolbar (copy + download inside each SQL pane) ---- */
         .sql-toolbar {
-            position:absolute; top:8px; right:8px;
-            display:flex; gap:4px; opacity:.5; transition:opacity .2s;
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+            opacity: .5;
+            transition: opacity .2s;
         }
-        .sql-block:hover .sql-toolbar { opacity:1; }
+
+        .sql-block:hover .sql-toolbar {
+            opacity: 1;
+        }
 
         /* ---- schema editor ---- */
-        .schema-editor-table { width:100%; border-collapse:collapse; }
+        .schema-editor-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
         .schema-editor-table th {
-            background:#1a2236; color:#94a3b8; padding:6px 10px;
-            text-align:left; font-size:12px; border-bottom:2px solid #334155;
-            position:sticky; top:0;
+            background: #1a2236;
+            color: #94a3b8;
+            padding: 6px 10px;
+            text-align: left;
+            font-size: 12px;
+            border-bottom: 2px solid #334155;
+            position: sticky;
+            top: 0;
         }
-        .schema-editor-table td { padding:4px 8px; border-bottom:1px solid #1e293b; font-size:13px; }
-        .schema-editor-table input, .schema-editor-table select {
-            background:#0f172a; color:#e2e8f0; border:1px solid #475569;
-            border-radius:4px; padding:3px 6px; font-size:12px; width:100%;
+
+        .schema-editor-table td {
+            padding: 4px 8px;
+            border-bottom: 1px solid #1e293b;
+            font-size: 13px;
         }
-        .schema-editor-table select { min-width:140px; }
-        .schema-editor-toolbar { padding:8px 0; display:flex; gap:8px; align-items:center; }
+
+        .schema-editor-table input,
+        .schema-editor-table select {
+            background: #0f172a;
+            color: #e2e8f0;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-size: 12px;
+            width: 100%;
+        }
+
+        .schema-editor-table select {
+            min-width: 140px;
+        }
+
+        .schema-editor-toolbar {
+            padding: 8px 0;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
 
         /* ---- best practices cards ---- */
-        .bp-layout { display:flex; flex-direction:column; gap:16px; }
-        .bp-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+        .bp-layout {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .bp-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+        }
+
         .bp-card {
-            background:#0f172a; border:1px solid #334155; border-radius:8px;
-            padding:14px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 14px;
         }
-        .bp-card h3, .bp-card h4 { margin:0 0 10px; font-size:14px; color:#e2e8f0; }
-        .bp-card ul { margin:0; padding-left:18px; color:#cbd5e1; }
-        .bp-card li { margin:6px 0; font-size:13px; }
-        .bp-item-label { display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; margin-bottom:6px; }
-        .bp-item-value { color:#e2e8f0; font-size:13px; line-height:1.5; }
+
+        .bp-card h3,
+        .bp-card h4 {
+            margin: 0 0 10px;
+            font-size: 14px;
+            color: #e2e8f0;
+        }
+
+        .bp-card ul {
+            margin: 0;
+            padding-left: 18px;
+            color: #cbd5e1;
+        }
+
+        .bp-card li {
+            margin: 6px 0;
+            font-size: 13px;
+        }
+
+        .bp-item-label {
+            display: block;
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .bp-item-value {
+            color: #e2e8f0;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
         .bp-badge {
-            display:inline-block; padding:3px 8px; border-radius:999px; font-size:11px;
-            font-weight:700; margin-bottom:10px;
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 10px;
         }
-        .bp-badge-rec { background:#1e3a5f; color:#93c5fd; }
-        .bp-badge-fast { background:#15311f; color:#86efac; }
-        .bp-badge-cost { background:#3b1f63; color:#d8b4fe; }
-        .bp-badge-risk { background:#422006; color:#fbbf24; }
+
+        .bp-badge-rec {
+            background: #1e3a5f;
+            color: #93c5fd;
+        }
+
+        .bp-badge-fast {
+            background: #15311f;
+            color: #86efac;
+        }
+
+        .bp-badge-cost {
+            background: #3b1f63;
+            color: #d8b4fe;
+        }
+
+        .bp-badge-risk {
+            background: #422006;
+            color: #fbbf24;
+        }
+
         .bp-code {
-            background:#020617; border:1px solid #1e293b; border-radius:6px; padding:12px;
-            font-family:'Cascadia Code','Fira Code',Consolas,monospace; font-size:12px; white-space:pre-wrap;
-            color:#e2e8f0;
+            background: #020617;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            color: #e2e8f0;
         }
 
         /* ---- second toolbar row ---- */
         .toolbar-row2 {
-            padding: 6px 20px; background: #1a2236;
+            padding: 6px 20px;
+            background: #1a2236;
             border-bottom: 1px solid #334155;
-            display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
         }
 
         /* ---- badge for xlsx ---- */
-        .badge-excel  { background:#14432a; color:#4ade80; }
+        .badge-excel {
+            background: #14432a;
+            color: #4ade80;
+        }
+
+        /* ---- wizard step indicator ---- */
+        .wizard-steps {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            margin-left: auto;
+        }
+
+        .wizard-step {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #475569;
+            transition: color .2s;
+        }
+
+        .wizard-step.active {
+            color: #93c5fd;
+        }
+
+        .wizard-step.done {
+            color: #4ade80;
+        }
+
+        .wizard-step-num {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 2px solid #475569;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            transition: all .2s;
+        }
+
+        .wizard-step.active .wizard-step-num {
+            border-color: #60a5fa;
+            color: #60a5fa;
+        }
+
+        .wizard-step.done .wizard-step-num {
+            border-color: #4ade80;
+            background: #4ade80;
+            color: #0f172a;
+        }
+
+        .wizard-step-line {
+            width: 28px;
+            height: 2px;
+            background: #334155;
+            margin: 0 4px;
+            transition: background .2s;
+        }
+
+        .wizard-step-line.done {
+            background: #4ade80;
+        }
+
+        /* ---- tab compatibility dot ---- */
+        .tab-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+
+        .tab-dot-green {
+            background: #4ade80;
+        }
+
+        .tab-dot-yellow {
+            background: #fbbf24;
+        }
+
+        .tab-dot-red {
+            background: #f87171;
+        }
+
+        /* ---- quick start banner ---- */
+        .quick-start {
+            background: #172033;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            color: #94a3b8;
+            line-height: 1.5;
+        }
+
+        .quick-start strong {
+            color: #e2e8f0;
+        }
+
+        /* ---- inline settings bar ---- */
+        .sql-settings {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            padding: 8px 0;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .sql-settings label {
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
+        .sql-settings input {
+            padding: 4px 8px;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            background: #0f172a;
+            color: #e2e8f0;
+            font-size: 12px;
+            width: 260px;
+        }
     </style>
 </head>
+
 <body>
-<div class="container">
-    <!-- header -->
-    <div class="header">
-        <div>
-            <h1>External File Detection Tool</h1>
-            <div class="subtitle">Preview files &bull; Generate T-SQL &bull; Understand metadata</div>
-        </div>
-    </div>
-
-    <!-- toolbar -->
-    <div class="toolbar">
-        <button class="btn btn-primary" onclick="showBrowser()">Browse Files</button>
-        <button class="btn" onclick="analyzeFolder()">Analyze Folder</button>
-        <div class="input-group">
-            <label>Platform:</label>
-            <select id="selPlatform">
-                <option value="sql_server_2019">SQL Server 2019</option>
-                <option value="sql_server_2022">SQL Server 2022</option>
-                <option value="sql_server_2025">SQL Server 2025</option>
-                <option value="azure_sql_db">Azure SQL Database</option>
-                <option value="azure_sql_mi">Azure SQL Managed Instance</option>
-                <option value="synapse_dedicated" selected>Synapse Dedicated Pool</option>
-                <option value="synapse_serverless">Synapse Serverless</option>
-                <option value="fabric_sql_db">Fabric SQL Database</option>
-                <option value="fabric_dw">Fabric Data Warehouse</option>
-            </select>
-        </div>
-        <button class="btn" onclick="exportAllSQL()" title="Download all SQL as a single .sql file">Export All SQL</button>
-        <button class="btn" onclick="clearAll()">Clear</button>
-    </div>
-
-    <!-- main -->
-    <div class="main-content">
-        <div class="sidebar" id="sidebar">
-            <div id="dropZone" class="drop-zone">Drop files here<br>or use Browse Files</div>
-            <div id="fileListArea"><div class="placeholder">Select files to analyse</div></div>
-        </div>
-        <div class="content-area">
-            <div class="tabs" id="tabBar">
-                <div class="tab active" data-tab="preview">Preview</div>
-                <div class="tab" data-tab="metadata">Metadata</div>
-                <div class="tab" data-tab="create_table">CREATE TABLE</div>
-                <div class="tab" data-tab="bulk_insert">BULK INSERT</div>
-                <div class="tab" data-tab="openrowset">OPENROWSET</div>
-                <div class="tab" data-tab="ext_table">EXT TABLE</div>
-                <div class="tab" data-tab="copy_into">COPY INTO</div>
-                <div class="tab" data-tab="json_functions">JSON Functions</div>
-                <div class="tab" data-tab="for_json">FOR JSON</div>
-                <div class="tab" data-tab="schema_editor">Schema Editor</div>
-                <div class="tab" data-tab="best_practices">Best Practices</div>
+    <div class="container">
+        <!-- header -->
+        <div class="header">
+            <div>
+                <h1>External File Detection Tool</h1>
+                <div class="subtitle">Preview files &bull; Generate T-SQL &bull; Understand metadata</div>
             </div>
-            <div class="tab-content">
-                <div class="tab-pane active" id="pane-preview"><div class="placeholder">Select a file to preview</div></div>
-                <div class="tab-pane" id="pane-metadata"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-create_table"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-bulk_insert"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-openrowset"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-ext_table"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-copy_into"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-json_functions"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-for_json"><div class="placeholder">Select a file</div></div>
-                <div class="tab-pane" id="pane-schema_editor"><div class="placeholder">Select a file to edit its schema</div></div>
-                <div class="tab-pane" id="pane-best_practices"><div class="placeholder">Select a file</div></div>
+            <div class="wizard-steps" id="wizardSteps">
+                <div class="wizard-step active" id="ws1"><span class="wizard-step-num">1</span><span>Upload</span></div>
+                <div class="wizard-step-line" id="wl1"></div>
+                <div class="wizard-step" id="ws2"><span class="wizard-step-num">2</span><span>Review</span></div>
+                <div class="wizard-step-line" id="wl2"></div>
+                <div class="wizard-step" id="ws3"><span class="wizard-step-num">3</span><span>SQL</span></div>
             </div>
         </div>
+
+        <!-- toolbar -->
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="showBrowser()">Browse Files</button>
+            <button class="btn" onclick="analyzeFolder()">Analyze Folder</button>
+            <div class="input-group">
+                <label>Platform:</label>
+                <select id="selPlatform">
+                    <optgroup label="SQL Server">
+                        <option value="sql_server_2025">SQL Server 2025</option>
+                        <option value="sql_server_2022" selected>SQL Server 2022</option>
+                        <option value="sql_server_2019">SQL Server 2019</option>
+                    </optgroup>
+                    <optgroup label="Azure SQL">
+                        <option value="azure_sql_db">Azure SQL Database</option>
+                        <option value="azure_sql_mi">Azure SQL Managed Instance</option>
+                    </optgroup>
+                    <optgroup label="Microsoft Fabric">
+                        <option value="fabric_sql_db">Fabric SQL Database</option>
+                    </optgroup>
+                </select>
+            </div>
+            <button class="btn" onclick="exportAllSQL()" title="Download all SQL as a single .sql file">Export All
+                SQL</button>
+            <button class="btn" onclick="clearAll()">Clear</button>
+        </div>
+        <!-- settings row -->
+        <div class="toolbar-row2" id="settingsRow" style="display:none">
+            <div class="input-group">
+                <label>Table:</label>
+                <input id="inpTableName" placeholder="auto-detected" style="width:140px" oninput="regenSQL()">
+            </div>
+            <div class="input-group">
+                <label>Account:</label>
+                <input id="inpStorageAccount" placeholder="mystorageaccount" style="width:160px"
+                    oninput="composeStorageUrl()">
+            </div>
+            <div class="input-group">
+                <label>Container:</label>
+                <input id="inpStorageContainer" placeholder="data" style="width:120px" oninput="composeStorageUrl()">
+            </div>
+            <div class="input-group">
+                <label>Path:</label>
+                <input id="inpStoragePath" placeholder="folder/file.csv" style="width:160px"
+                    oninput="composeStorageUrl()">
+            </div>
+            <div class="input-group"
+                style="opacity:.6;font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                id="urlPreview" title=""></div>
+        </div>
+
+        <!-- main -->
+        <div class="main-content">
+            <div class="sidebar" id="sidebar">
+                <div id="dropZone" class="drop-zone">Drop files here<br>or use Browse Files</div>
+                <div id="fileListArea">
+                    <div class="placeholder">Select files to analyse</div>
+                </div>
+            </div>
+            <div class="content-area">
+                <div class="tabs" id="tabBar">
+                    <div class="tab active" data-tab="preview">Preview</div>
+                    <div class="tab" data-tab="metadata">Metadata</div>
+                    <div class="tab" data-tab="create_table">CREATE TABLE</div>
+                    <div class="tab" data-tab="bulk_insert">BULK INSERT</div>
+                    <div class="tab" data-tab="openrowset">OPENROWSET</div>
+                    <div class="tab" data-tab="ext_table">EXT TABLE</div>
+                    <div class="tab" data-tab="json_functions" id="tab-json_functions">JSON Functions</div>
+                    <div class="tab" data-tab="for_json" id="tab-for_json">FOR JSON</div>
+                    <div class="tab" data-tab="schema_editor">Schema Editor</div>
+                    <div class="tab" data-tab="best_practices">Best Practices</div>
+                </div>
+                <div class="tab-content">
+                    <div class="tab-pane active" id="pane-preview">
+                        <div class="placeholder" id="welcomeState">
+                            <div style="max-width:480px;margin:0 auto;text-align:center;padding:40px 20px">
+                                <div style="font-size:48px;margin-bottom:16px">📂</div>
+                                <h2 style="color:#e2e8f0;margin:0 0 12px;font-size:20px">Import Wizard</h2>
+                                <p style="color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 20px">
+                                    Drop a data file in the sidebar, browse your file system, or drag &amp; drop
+                                    to get started. The tool will detect the file type, show a data preview,
+                                    and generate ready-to-use T-SQL for your target platform.
+                                </p>
+                                <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+                                    <div
+                                        style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;text-align:left;flex:1;min-width:130px">
+                                        <div
+                                            style="font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:4px">
+                                            Step 1</div>
+                                        <div style="font-size:13px;color:#e2e8f0">Upload or browse a file</div>
+                                    </div>
+                                    <div
+                                        style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;text-align:left;flex:1;min-width:130px">
+                                        <div
+                                            style="font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:4px">
+                                            Step 2</div>
+                                        <div style="font-size:13px;color:#e2e8f0">Review metadata &amp; preview</div>
+                                    </div>
+                                    <div
+                                        style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;text-align:left;flex:1;min-width:130px">
+                                        <div
+                                            style="font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:4px">
+                                            Step 3</div>
+                                        <div style="font-size:13px;color:#e2e8f0">Copy T-SQL for your platform</div>
+                                    </div>
+                                </div>
+                                <div style="margin-top:20px;display:flex;gap:8px;justify-content:center">
+                                    <button class="btn btn-primary" onclick="showBrowser()">Browse Files</button>
+                                    <span style="color:#475569;font-size:13px;line-height:32px">or drag &amp; drop onto
+                                        the sidebar</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="tab-pane" id="pane-metadata">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-create_table">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-bulk_insert">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-openrowset">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-ext_table">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-json_functions">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-for_json">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                    <div class="tab-pane" id="pane-schema_editor">
+                        <div class="placeholder">Select a file to edit its schema</div>
+                    </div>
+                    <div class="tab-pane" id="pane-best_practices">
+                        <div class="placeholder">Select a file</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- status -->
+        <div class="status-bar">
+            <span id="statusText">Ready</span>
+            <span id="statusRight">
+                <span class="tab-dot tab-dot-green"></span> Available
+                <span class="tab-dot tab-dot-yellow" style="margin-left:8px"></span> Limited
+                <span class="tab-dot tab-dot-red" style="margin-left:8px"></span> N/A
+            </span>
+        </div>
     </div>
 
-    <!-- status -->
-    <div class="status-bar">
-        <span id="statusText">Ready</span>
-        <span id="statusRight"></span>
-    </div>
-</div>
-
-<!-- file browser modal (hidden) -->
-<div id="browserModal" class="modal-overlay hidden">
-    <div class="modal">
-        <div class="modal-header">
-            <h2>Browse Files</h2>
-            <div class="browser-path" id="browserPath"></div>
-        </div>
-        <div class="modal-body" id="browserBody">
-            <div class="placeholder">Loading&hellip;</div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn" onclick="selectBrowserFolder()">Analyse This Folder</button>
-            <button class="btn" onclick="closeBrowser()">Cancel</button>
-            <button class="btn btn-primary" onclick="analyseChecked()">Analyse Selected</button>
+    <!-- file browser modal (hidden) -->
+    <div id="browserModal" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Browse Files</h2>
+                <div class="browser-path" id="browserPath"></div>
+            </div>
+            <div class="modal-body" id="browserBody">
+                <div class="placeholder">Loading&hellip;</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="selectBrowserFolder()">Analyse This Folder</button>
+                <button class="btn" onclick="closeBrowser()">Cancel</button>
+                <button class="btn btn-primary" onclick="analyseChecked()">Analyse Selected</button>
+            </div>
         </div>
     </div>
-</div>
 
-<script>
-/* ================================================================
-   STATE
-   ================================================================ */
-let currentFiles = [];
-let selectedIdx  = -1;
-let checkedPaths = new Set();
-let browserDir   = '';
-let initialPath  = '';
-let schemaOverrides = {};   // { col_name: { sqlType: 'BIGINT', colName: 'new_name' } }
-let lastStatements  = {};   // cached SQL panes for export
+    <script>
+        /* ================================================================
+           STATE
+           ================================================================ */
+        let currentFiles = [];
+        let selectedIdx = -1;
+        let checkedPaths = new Set();
+        let browserDir = '';
+        let initialPath = '';
+        let schemaOverrides = {};
+        let lastStatements = {};
+        let regenTimer = null;
 
-/* ================================================================
-   BOOT
-   ================================================================ */
-fetch('/api/initial_path').then(r=>r.json()).then(d=>{
-    if(d.success) initialPath = d.path;
-}).catch(()=>{});
-
-/* ================================================================
-   AUTO-REGENERATE SQL on toolbar change
-   ================================================================ */
-document.getElementById('selPlatform').addEventListener('change', () => {
-    if (selectedIdx >= 0) loadSQL(currentFiles[selectedIdx]);
-});
-
-/* ================================================================
-   DRAG AND DROP on sidebar
-   ================================================================ */
-(function initDragDrop() {
-    const sidebar = document.getElementById('sidebar');
-    const zone = document.getElementById('dropZone');
-    let dragCounter = 0;
-    sidebar.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; sidebar.classList.add('drag-over'); zone.classList.add('active'); });
-    sidebar.addEventListener('dragleave', e => { e.preventDefault(); dragCounter--; if(dragCounter<=0){sidebar.classList.remove('drag-over');zone.classList.remove('active');dragCounter=0;} });
-    sidebar.addEventListener('dragover', e => e.preventDefault());
-    sidebar.addEventListener('drop', e => {
-        e.preventDefault(); dragCounter=0; sidebar.classList.remove('drag-over'); zone.classList.remove('active');
-        const files = e.dataTransfer.files;
-        if (!files.length) return;
-        setStatus('Uploading & analysing ' + files.length + ' file(s)...');
-        const formData = new FormData();
-        for (let i = 0; i < files.length; i++) {
-            formData.append('files', files[i]);
+        /* ================================================================
+           WIZARD STEP INDICATOR
+           ================================================================ */
+        function setWizardStep(step) {
+            // step: 1 = upload, 2 = review, 3 = SQL
+            ['ws1', 'ws2', 'ws3'].forEach((id, i) => {
+                const el = document.getElementById(id);
+                el.classList.remove('active', 'done');
+                if (i + 1 < step) el.classList.add('done');
+                else if (i + 1 === step) el.classList.add('active');
+            });
+            ['wl1', 'wl2'].forEach((id, i) => {
+                const el = document.getElementById(id);
+                el.classList.toggle('done', i + 1 < step);
+            });
         }
-        fetch('/api/upload', {
-            method:'POST',
-            body: formData
-        }).then(r=>r.json()).then(d => {
-            if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Analysed ' + d.count + ' file(s)'); }
-            else setStatus('Error: ' + (d.error||''));
-        }).catch(e => setStatus('Error: ' + e.message));
-    });
-})();
 
-/* ================================================================
-   TABS
-   ================================================================ */
-document.getElementById('tabBar').addEventListener('click', e => {
-    const t = e.target.closest('.tab');
-    if (!t) return;
-    document.querySelectorAll('#tabBar .tab').forEach(x => x.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    document.getElementById('pane-' + t.dataset.tab).classList.add('active');
-});
+        /* ================================================================
+           PLATFORM FEATURE MAP — dots on tabs
+           ================================================================ */
+        const PLATFORM_TAB_COMPAT = {
+            // platform -> tab -> 'green' | 'yellow' | 'red'
+            sql_server_2019: { create_table: 'green', bulk_insert: 'green', openrowset: 'green', ext_table: 'green', json_functions: 'green', for_json: 'green' },
+            sql_server_2022: { create_table: 'green', bulk_insert: 'green', openrowset: 'green', ext_table: 'green', json_functions: 'green', for_json: 'green' },
+            sql_server_2025: { create_table: 'green', bulk_insert: 'green', openrowset: 'green', ext_table: 'green', json_functions: 'green', for_json: 'green' },
+            azure_sql_db: { create_table: 'green', bulk_insert: 'green', openrowset: 'yellow', ext_table: 'red', json_functions: 'green', for_json: 'green' },
+            azure_sql_mi: { create_table: 'green', bulk_insert: 'green', openrowset: 'yellow', ext_table: 'red', json_functions: 'green', for_json: 'green' },
+            fabric_sql_db: { create_table: 'green', bulk_insert: 'red', openrowset: 'green', ext_table: 'red', json_functions: 'green', for_json: 'green' },
+        };
 
-/* ================================================================
-   STATUS
-   ================================================================ */
-function setStatus(msg, right) {
-    document.getElementById('statusText').textContent = msg;
-    if (right !== undefined) document.getElementById('statusRight').textContent = right;
-}
-
-/* ================================================================
-   FILE LIST RENDERING
-   ================================================================ */
-function renderFileList() {
-    const area = document.getElementById('fileListArea');
-    if (!currentFiles.length) { area.innerHTML = '<div class="placeholder">No files analysed</div>'; return; }
-    area.innerHTML = '';
-    currentFiles.forEach((f, i) => {
-        const d = document.createElement('div');
-        d.className = 'file-item' + (i === selectedIdx ? ' selected' : '');
-        const name = (f.file_path || '').split(/[\\/]/).pop();
-        const badge = badgeClass(f);
-        d.innerHTML = '<div class="file-info"><div class="file-name"></div><div class="file-meta"></div></div><span class="badge ' + badge + '"></span>';
-        d.querySelector('.file-name').textContent = name;
-        d.querySelector('.file-meta').textContent = fmtSize(f.file_size||0) + ' \u2022 ' + (f.file_path||'');
-        d.querySelector('.badge').textContent = f.error ? 'error' : (f.file_type||'?');
-        d.addEventListener('click', () => selectFile(i));
-        area.appendChild(d);
-    });
-}
-
-function badgeClass(f) {
-    if (f.error) return 'badge-error';
-    return ({csv:'badge-csv',json:'badge-json',parquet:'badge-parquet',delta:'badge-delta',text:'badge-text',excel:'badge-excel'})[f.file_type] || 'badge-text';
-}
-
-/* ================================================================
-   SELECT FILE  — load preview + SQL + metadata + schema editor
-   ================================================================ */
-function selectFile(idx) {
-    selectedIdx = idx;
-    renderFileList();
-    const f = currentFiles[idx];
-    schemaOverrides = {};  // reset overrides for new file
-    if (f.error) {
-        setPaneHTML('preview', '<div class="placeholder">File has errors: ' + esc(f.error) + '</div>');
-        return;
-    }
-    loadPreview(f);
-    loadSQL(f);
-    loadMetadata(f);
-    loadSchemaEditor(f);
-}
-
-/* ================================================================
-   PREVIEW  — tabular data grid via /api/preview_table
-   ================================================================ */
-function loadPreview(f) {
-    setPaneHTML('preview', '<div class="placeholder"><span class="loading-spinner"></span> Loading preview&hellip;</div>');
-    fetch('/api/preview_table/' + encodeURIComponent(f.file_path) + '?rows=200')
-        .then(r => r.json())
-        .then(d => {
-            if (!d.success) { setPaneHTML('preview', '<div class="placeholder">' + esc(d.error) + '</div>'); return; }
-            let html = '<div class="data-grid-wrapper"><table class="data-grid"><thead><tr>';
-            (d.columns || []).forEach(c => {
-                html += '<th>' + esc(c.name) + '<span class="col-type">' + esc(c.type) + '</span></th>';
+        function updateTabDots() {
+            const pl = document.getElementById('selPlatform').value;
+            const compat = PLATFORM_TAB_COMPAT[pl] || {};
+            document.querySelectorAll('#tabBar .tab[data-tab]').forEach(tab => {
+                const key = tab.dataset.tab;
+                let dot = tab.querySelector('.tab-dot');
+                if (!compat[key]) { if (dot) dot.remove(); return; }
+                if (!dot) { dot = document.createElement('span'); dot.className = 'tab-dot'; tab.appendChild(dot); }
+                dot.className = 'tab-dot tab-dot-' + compat[key];
+                dot.title = compat[key] === 'green' ? 'Fully supported' : compat[key] === 'yellow' ? 'Limited support' : 'Not available';
             });
-            html += '</tr></thead><tbody>';
-            (d.rows || []).forEach(row => {
-                html += '<tr>';
-                row.forEach(v => { html += '<td>' + esc(v == null ? '' : String(v)) + '</td>'; });
-                html += '</tr>';
+        }
+        document.getElementById('selPlatform').addEventListener('change', updateTabDots);
+
+        /* ================================================================
+           QUICK START DESCRIPTIONS per tab
+           ================================================================ */
+        const TAB_QUICKSTART = {
+            create_table: { title: 'CREATE TABLE', desc: 'Creates a standard relational table to hold imported data. Run this first, then load data with BULK INSERT or INSERT...SELECT FROM OPENROWSET.', best: 'Any platform', nextStep: 'Next: Use the BULK INSERT or OPENROWSET tab to load data into this table.' },
+            bulk_insert: { title: 'BULK INSERT', desc: 'High-speed batch import for CSV/text files directly into a table. Best for SQL Server and Azure SQL.', best: 'SQL Server, Azure SQL', nextStep: 'Prerequisite: Create the target table first (see CREATE TABLE tab).' },
+            openrowset: { title: 'OPENROWSET', desc: 'Ad-hoc queries over external files without creating a table. Ideal for exploration and ELT SELECT INTO patterns.', best: 'All platforms', nextStep: 'Tip: Use SELECT INTO to create and populate a table in one step, or INSERT INTO for an existing table.' },
+            ext_table: { title: 'External Table', desc: 'Creates a persistent virtual table backed by external files (PolyBase/Synapse). Includes credential + data source setup when supported.', best: 'Synapse, SQL Server' },
+            json_functions: { title: 'JSON Functions', desc: 'Parse JSON documents using OPENJSON, JSON_VALUE, JSON_QUERY. Shreds nested JSON into relational rows.', best: 'SQL Server, Azure SQL, Fabric SQL DB' },
+            for_json: { title: 'FOR JSON', desc: 'Export SQL query results as JSON. Use FOR JSON PATH for structured output or JSON_OBJECT for row-level.', best: 'SQL Server, Azure SQL, Fabric SQL DB' },
+        };
+
+        /* ================================================================
+           STORAGE URL BUILDER — compose from Account / Container / Path
+           ================================================================ */
+        function composeStorageUrl(returnOnly) {
+            const acct = (document.getElementById('inpStorageAccount') || {}).value || '';
+            const cont = (document.getElementById('inpStorageContainer') || {}).value || '';
+            const path = (document.getElementById('inpStoragePath') || {}).value || '';
+            let url = '';
+            if (acct) {
+                url = 'https://' + acct + '.dfs.core.windows.net';
+                if (cont) url += '/' + cont;
+                if (path) url += '/' + path.replace(/^\//, '');
+            }
+            const preview = document.getElementById('urlPreview');
+            if (preview) {
+                preview.textContent = url || '';
+                preview.title = url || '';
+            }
+            if (returnOnly) return url;
+            regenSQL();
+            return url;
+        }
+
+        /* ================================================================
+           REGEN SQL on settings change (debounced)
+           ================================================================ */
+        function regenSQL() {
+            if (selectedIdx < 0) return;
+            clearTimeout(regenTimer);
+            regenTimer = setTimeout(() => loadSQL(currentFiles[selectedIdx]), 400);
+        }
+
+        /* ================================================================
+           BOOT
+           ================================================================ */
+        fetch('/api/initial_path').then(r => r.json()).then(d => {
+            if (d.success) initialPath = d.path;
+        }).catch(() => { });
+
+        /* ================================================================
+           AUTO-REGENERATE SQL on toolbar change
+           ================================================================ */
+        document.getElementById('selPlatform').addEventListener('change', () => {
+            if (selectedIdx >= 0) loadSQL(currentFiles[selectedIdx]);
+        });
+
+        /* ================================================================
+           DRAG AND DROP on sidebar
+           ================================================================ */
+        (function initDragDrop() {
+            const sidebar = document.getElementById('sidebar');
+            const zone = document.getElementById('dropZone');
+            let dragCounter = 0;
+            sidebar.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; sidebar.classList.add('drag-over'); zone.classList.add('active'); });
+            sidebar.addEventListener('dragleave', e => { e.preventDefault(); dragCounter--; if (dragCounter <= 0) { sidebar.classList.remove('drag-over'); zone.classList.remove('active'); dragCounter = 0; } });
+            sidebar.addEventListener('dragover', e => e.preventDefault());
+            sidebar.addEventListener('drop', e => {
+                e.preventDefault(); dragCounter = 0; sidebar.classList.remove('drag-over'); zone.classList.remove('active');
+                const files = e.dataTransfer.files;
+                if (!files.length) return;
+                setStatus('Uploading & analysing ' + files.length + ' file(s)...');
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]);
+                }
+                fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                }).then(r => r.json()).then(d => {
+                    if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Analysed ' + d.count + ' file(s)'); if (d.files.length) selectFile(0); }
+                    else setStatus('Error: ' + (d.error || ''));
+                }).catch(e => setStatus('Error: ' + e.message));
             });
-            html += '</tbody></table></div>';
-            if (d.truncated) html += '<div style="padding:8px;color:#64748b;font-size:12px;">Showing first 200 of ' + (d.total_rows||'?').toLocaleString() + ' rows</div>';
-            setPaneHTML('preview', html);
-            setStatus('Preview loaded', (d.rows||[]).length + ' rows shown');
-        })
-        .catch(e => setPaneHTML('preview', '<div class="placeholder">Error: ' + esc(e.message) + '</div>'));
-}
+        })();
 
-/* ================================================================
-   SQL GENERATION  — all statement types via /api/sql_ddl
-   ================================================================ */
-function loadSQL(f) {
-    const ds = 'MyDataSource';
-    const sc = 'dbo';
-    const pl = document.getElementById('selPlatform').value || 'synapse_dedicated';
-    const tnInput = document.getElementById('inpTableName');
-    const suInput = document.getElementById('inpStorageUrl');
-    const tn = tnInput ? tnInput.value || '' : '';
-    const su = suInput ? suInput.value || '' : '';
-    const allPanes = ['create_table','bulk_insert','openrowset','ext_table','copy_into','json_functions','for_json','best_practices'];
-    allPanes.forEach(k =>
-        setPaneHTML(k, '<div class="placeholder"><span class="loading-spinner"></span> Generating&hellip;</div>')
-    );
-    let url = '/api/sql_ddl/' + encodeURIComponent(f.file_path) +
-          '?data_source=' + encodeURIComponent(ds) +
-          '&schema=' + encodeURIComponent(sc) +
-          '&target_platform=' + encodeURIComponent(pl);
-    if (tn) url += '&table_name=' + encodeURIComponent(tn);
-    if (su) url += '&storage_url=' + encodeURIComponent(su);
-    // Send schema overrides as JSON if any
-    const overrides = Object.keys(schemaOverrides).length ? JSON.stringify(schemaOverrides) : '';
-    if (overrides) url += '&schema_overrides=' + encodeURIComponent(overrides);
+        /* ================================================================
+           TABS
+           ================================================================ */
+        document.getElementById('tabBar').addEventListener('click', e => {
+            const t = e.target.closest('.tab');
+            if (!t) return;
+            document.querySelectorAll('#tabBar .tab').forEach(x => x.classList.remove('active'));
+            document.querySelectorAll('.tab-pane').forEach(x => x.classList.remove('active'));
+            t.classList.add('active');
+            document.getElementById('pane-' + t.dataset.tab).classList.add('active');
+        });
 
-    fetch(url)
-        .then(r => r.json())
-        .then(d => {
-            if (!d.success) {
-                const err = '<div class="placeholder">' + esc(d.error||'Unknown error') + '</div>';
-                allPanes.forEach(k => setPaneHTML(k, err));
+        /* ================================================================
+           STATUS
+           ================================================================ */
+        function setStatus(msg, right) {
+            document.getElementById('statusText').textContent = msg;
+            if (right !== undefined) document.getElementById('statusRight').textContent = right;
+        }
+
+        /* ================================================================
+           FILE LIST RENDERING
+           ================================================================ */
+        function renderFileList() {
+            const area = document.getElementById('fileListArea');
+            if (!currentFiles.length) { area.innerHTML = '<div class="placeholder">No files analysed</div>'; return; }
+            area.innerHTML = '';
+            currentFiles.forEach((f, i) => {
+                const d = document.createElement('div');
+                d.className = 'file-item' + (i === selectedIdx ? ' selected' : '');
+                const name = (f.file_path || '').split(/[\\/]/).pop();
+                const badge = badgeClass(f);
+                d.innerHTML = '<div class="file-info"><div class="file-name"></div><div class="file-meta"></div></div><span class="badge ' + badge + '"></span><button class="btn-remove-file" title="Remove file">&times;</button>';
+                d.querySelector('.file-name').textContent = name;
+                d.querySelector('.file-meta').textContent = fmtSize(f.file_size || 0) + ' \u2022 ' + (f.file_path || '');
+                d.querySelector('.badge').textContent = f.error ? 'error' : (f.file_type || '?');
+                d.querySelector('.btn-remove-file').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    currentFiles.splice(i, 1);
+                    if (selectedIdx === i) { selectedIdx = -1; clearPanes(); }
+                    else if (selectedIdx > i) { selectedIdx--; }
+                    renderFileList();
+                });
+                d.addEventListener('click', () => selectFile(i));
+                area.appendChild(d);
+            });
+        }
+
+        function clearPanes() {
+            ['preview', 'metadata', 'create_table', 'bulk_insert', 'openrowset', 'ext_table', 'json_functions', 'for_json', 'schema_editor', 'best_practices'].forEach(k =>
+                setPaneHTML(k, '<div class="placeholder">Select a file</div>'));
+        }
+
+        function badgeClass(f) {
+            if (f.error) return 'badge-error';
+            return ({ csv: 'badge-csv', json: 'badge-json', parquet: 'badge-parquet', delta: 'badge-delta', iceberg: 'badge-iceberg', text: 'badge-text', excel: 'badge-excel' })[f.file_type] || 'badge-text';
+        }
+
+        /* ================================================================
+           SELECT FILE  — load preview + SQL + metadata + schema editor
+           ================================================================ */
+        function selectFile(idx) {
+            selectedIdx = idx;
+            renderFileList();
+            const f = currentFiles[idx];
+            schemaOverrides = {};
+            // Advance wizard to step 2 (review)
+            setWizardStep(2);
+            document.getElementById('settingsRow').style.display = 'flex';
+            updateTabDots();
+            if (f.error) {
+                const errMsg = '<div class="placeholder" style="color:#f87171">\u26A0 File has errors:<br><br>' + esc(f.error) + '</div>';
+                ['preview', 'metadata', 'create_table', 'bulk_insert', 'openrowset', 'ext_table', 'json_functions', 'for_json', 'schema_editor', 'best_practices'].forEach(k => setPaneHTML(k, errMsg));
+                setStatus('Error analysing file');
                 return;
             }
-            const s = d.statements || {};
-            lastStatements = s;
-            setSqlPane('create_table',      s.create_table || '');
-            setSqlPane('bulk_insert',       s.bulk_insert || '');
-            setSqlPane('openrowset',        s.openrowset || '');
-            setSqlPane('ext_table',         (s.external_file_format||'') + '\n\n' + (s.create_external_table||''));
-            setSqlPane('copy_into',         s.copy_into || '');
-            setSqlPane('json_functions',    s.json_functions || '');
-            setSqlPane('for_json',          s.for_json || '');
-            setSqlPane('best_practices',    s.best_practices || '');
-            setStatus('SQL generated for ' + ((f.file_path||'').split(/[\\/]/).pop()));
-        })
-        .catch(e => {
-            const err = '<div class="placeholder">Error: ' + esc(e.message) + '</div>';
-            allPanes.forEach(k => setPaneHTML(k, err));
-        });
-}
-
-function setSqlPane(key, sql) {
-    const pane = document.getElementById('pane-' + key);
-    if (key === 'best_practices') {
-        pane.innerHTML = renderBestPractices(sql);
-        return;
-    }
-    pane.innerHTML =
-        '<div class="sql-block">' +
-        '<div class="sql-toolbar">' +
-        '<button class="btn btn-sm" onclick="copySql(this)" title="Copy to clipboard">Copy</button>' +
-        '<button class="btn btn-sm" onclick="downloadSqlPane(\'' + key + '\')" title="Download as .sql file">\u2B07 .sql</button>' +
-        '</div>' +
-        '<code></code></div>';
-    const code = pane.querySelector('code');
-    code.innerHTML = highlightSQL(sql);
-}
-
-function renderBestPractices(sql) {
-    const parsed = parseBestPractices(sql || '');
-    let html = '<div class="bp-layout">';
-
-    if (parsed.summary.length) {
-        html += '<div class="bp-grid">';
-        parsed.summary.forEach(item => {
-            const badgeClass = ({'Best option':'bp-badge-rec','Fastest path':'bp-badge-fast','Lowest cost':'bp-badge-cost','Staging':'bp-badge-rec'})[item.label] || 'bp-badge-rec';
-            html += '<div class="bp-card">' +
-                '<div class="bp-badge ' + badgeClass + '">' + esc(item.label) + '</div>' +
-                '<div class="bp-item-value">' + esc(item.value) + '</div>' +
-                '</div>';
-        });
-        html += '</div>';
-    }
-
-    if (parsed.warnings.length) {
-        html += '<div class="bp-card"><div class="bp-badge bp-badge-risk">Watch-outs</div><h3>Risk checks</h3><ul>';
-        parsed.warnings.forEach(w => { html += '<li>' + esc(w) + '</li>'; });
-        html += '</ul></div>';
-    }
-
-    parsed.sections.forEach(section => {
-        html += '<div class="bp-card"><h3>' + esc(section.title) + '</h3><ul>';
-        section.items.forEach(item => { html += '<li>' + esc(item) + '</li>'; });
-        html += '</ul></div>';
-    });
-
-    if (parsed.validation.length) {
-        html += '<div class="bp-card"><h3>Validation SQL</h3><div class="bp-code">' + esc(parsed.validation.join('\n')) + '</div></div>';
-    }
-
-    if (!parsed.summary.length && !parsed.warnings.length && !parsed.sections.length && !parsed.validation.length) {
-        html += '<div class="sql-block"><code>' + highlightSQL(sql) + '</code></div>';
-    }
-
-    html += '</div>';
-    return html;
-}
-
-function parseBestPractices(sql) {
-    const lines = String(sql || '').split(/\r?\n/);
-    const result = {summary: [], warnings: [], sections: [], validation: []};
-    let mode = 'other';
-    let currentSection = null;
-
-    function flushSection() {
-        if (currentSection && currentSection.items.length) result.sections.push(currentSection);
-        currentSection = null;
-    }
-
-    lines.forEach(line => {
-        const trimmed = line.trim();
-        const comment = trimmed.startsWith('--') ? trimmed.replace(/^--\s?/, '') : null;
-        if (!comment && trimmed) {
-            if (mode === 'validation') result.validation.push(line);
-            return;
-        }
-        if (!comment) return;
-        if (!comment || /^=+$/.test(comment)) return;
-
-        if (comment === 'RECOMMENDED PATH') {
-            flushSection();
-            mode = 'summary';
-            return;
-        }
-        if (comment === 'WARNINGS / WATCH-OUTS') {
-            flushSection();
-            mode = 'warnings';
-            return;
-        }
-        if (comment === 'VALIDATION SQL AFTER LOAD') {
-            flushSection();
-            mode = 'validation';
-            return;
+            // Show/hide JSON-specific tabs based on file type
+            const isJson = f.file_type === 'json';
+            const jsonFnTab = document.getElementById('tab-json_functions');
+            const forJsonTab = document.getElementById('tab-for_json');
+            if (jsonFnTab) jsonFnTab.style.display = isJson ? '' : 'none';
+            if (forJsonTab) forJsonTab.style.display = isJson ? '' : 'none';
+            loadPreview(f);
+            loadSQL(f);
+            loadMetadata(f);
+            loadSchemaEditor(f);
         }
 
-        if (/^\d+\.\s/.test(comment)) {
-            flushSection();
-            mode = 'section';
-            currentSection = {title: comment.replace(/^\d+\.\s*/, ''), items: []};
-            return;
-        }
-
-        if (mode === 'summary' && comment.includes(':')) {
-            const parts = comment.split(':');
-            result.summary.push({label: parts.shift().trim(), value: parts.join(':').trim()});
-            return;
-        }
-        if (mode === 'warnings') {
-            result.warnings.push(comment);
-            return;
-        }
-        if (mode === 'section' && currentSection) {
-            currentSection.items.push(comment);
-        }
-    });
-
-    flushSection();
-    return result;
-}
-
-/* ================================================================
-   SCHEMA EDITOR
-   ================================================================ */
-function loadSchemaEditor(f) {
-    if (!f.schema || !f.schema.length) {
-        setPaneHTML('schema_editor', '<div class="placeholder">No schema detected for this file</div>');
-        return;
-    }
-    const typeMap = buildQuickTypeMap();
-    const sqlTypes = ['BIGINT','INT','SMALLINT','TINYINT','BIT','FLOAT','REAL','DECIMAL(18,2)','DECIMAL(38,10)',
-        'NVARCHAR(50)','NVARCHAR(100)','NVARCHAR(255)','NVARCHAR(500)','NVARCHAR(1000)','NVARCHAR(4000)','NVARCHAR(MAX)',
-        'VARCHAR(50)','VARCHAR(100)','VARCHAR(255)','VARCHAR(MAX)',
-        'DATE','TIME(7)','DATETIME2(7)','DATETIME2(6)',
-        'VARBINARY(MAX)','UNIQUEIDENTIFIER','XML'];
-
-    let html = '<div class="schema-editor-toolbar">' +
-        '<button class="btn btn-sm btn-primary" onclick="applySchemaOverrides()">Apply &amp; Regenerate SQL</button>' +
-        '<button class="btn btn-sm" onclick="resetSchemaOverrides()">Reset to Detected</button>' +
-        '<span style="color:#64748b;font-size:12px;margin-left:12px;">Edit column names or SQL types below, then click Apply.</span>' +
-        '</div>';
-    html += '<div class="data-grid-wrapper" style="max-height:calc(100% - 50px)"><table class="schema-editor-table"><thead><tr>' +
-        '<th>#</th><th>Original Column</th><th>Custom Name</th><th>Detected Type</th><th>SQL Type Override</th><th>Nullable</th></tr></thead><tbody>';
-
-    const nullableCols = new Set(f.nullable_columns || []);
-    f.schema.forEach(([name, dtype], i) => {
-        const detectedSql = mapSqlType(dtype, typeMap);
-        const ov = schemaOverrides[name] || {};
-        html += '<tr>' +
-            '<td>' + (i+1) + '</td>' +
-            '<td>' + esc(name) + '</td>' +
-            '<td><input data-col="' + esc(name) + '" data-field="colName" value="' + esc(ov.colName || name) + '"></td>' +
-            '<td style="color:#64748b">' + esc(dtype) + ' &rarr; ' + esc(detectedSql) + '</td>' +
-            '<td><select data-col="' + esc(name) + '" data-field="sqlType">';
-        // Build options: detected first, then standard list
-        const currentType = ov.sqlType || detectedSql;
-        const allOpts = [detectedSql, ...sqlTypes.filter(t => t !== detectedSql)];
-        allOpts.forEach(t => {
-            html += '<option value="' + esc(t) + '"' + (t === currentType ? ' selected' : '') + '>' + esc(t) + '</option>';
-        });
-        html += '</select></td>' +
-            '<td><input type="checkbox" data-col="' + esc(name) + '" data-field="nullable"' + (ov.nullable !== undefined ? (ov.nullable ? ' checked' : '') : (nullableCols.has(name) ? ' checked' : '')) + '></td>' +
-            '</tr>';
-    });
-    html += '</tbody></table></div>';
-    setPaneHTML('schema_editor', html);
-}
-
-function applySchemaOverrides() {
-    const f = currentFiles[selectedIdx];
-    if (!f) return;
-    schemaOverrides = {};
-    document.querySelectorAll('#pane-schema_editor input[data-col], #pane-schema_editor select[data-col]').forEach(el => {
-        const col = el.dataset.col;
-        const field = el.dataset.field;
-        if (!schemaOverrides[col]) schemaOverrides[col] = {};
-        if (field === 'nullable') schemaOverrides[col][field] = el.checked;
-        else schemaOverrides[col][field] = el.value;
-    });
-    loadSQL(f);
-    setStatus('Schema overrides applied — SQL regenerated');
-}
-function resetSchemaOverrides() {
-    schemaOverrides = {};
-    const f = currentFiles[selectedIdx];
-    if (f) { loadSchemaEditor(f); loadSQL(f); }
-    setStatus('Schema reset to detected types');
-}
-
-/* ================================================================
-   EXPORT ALL SQL  — download a single .sql file
-   ================================================================ */
-function exportAllSQL() {
-    if (!Object.keys(lastStatements).length) { alert('Generate SQL first by selecting a file'); return; }
-    const pl = document.getElementById('selPlatform');
-    const platformLabel = pl.options[pl.selectedIndex].text;
-    const fileName = selectedIdx >= 0 ? (currentFiles[selectedIdx].file_path||'file').split(/[\\/]/).pop() : 'file';
-    let content = '-- ==========================================================================\n';
-    content += '-- External File Detection Tool  —  Generated T-SQL\n';
-    content += '-- File     : ' + fileName + '\n';
-    content += '-- Platform : ' + platformLabel + '\n';
-    content += '-- Date     : ' + new Date().toISOString().slice(0,10) + '\n';
-    content += '-- ==========================================================================\n\n';
-    const order = ['create_table','bulk_insert','openrowset','external_file_format','create_external_table','copy_into','json_functions','for_json','best_practices'];
-    order.forEach(key => {
-        const sql = lastStatements[key];
-        if (sql && sql.trim()) {
-            content += sql + '\n\nGO\n\n';
-        }
-    });
-    downloadText(content, fileName.replace(/\.[^.]+$/, '') + '_all_sql.sql');
-}
-
-function downloadSqlPane(key) {
-    const pane = document.getElementById('pane-' + key);
-    const code = pane ? pane.querySelector('code') : null;
-    const text = code ? code.textContent : '';
-    if (!text.trim()) { alert('No SQL to download'); return; }
-    const fileName = selectedIdx >= 0 ? (currentFiles[selectedIdx].file_path||'file').split(/[\\/]/).pop() : 'file';
-    downloadText(text, fileName.replace(/\.[^.]+$/, '') + '_' + key + '.sql');
-}
-
-function downloadText(text, filename) {
-    const blob = new Blob([text], {type: 'text/sql;charset=utf-8'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(a.href);
-}
-
-/* ================================================================
-   METADATA
-   ================================================================ */
-function loadMetadata(f) {
-    let html = '<table class="meta-table">';
-    const rows = [
-        ['File', f.file_path],
-        ['Type', (f.file_type||'').toUpperCase()],
-        ['Size', fmtSize(f.file_size||0)],
-        ['Rows', f.row_count != null ? Number(f.row_count).toLocaleString() + (f.row_count_estimated ? ' (estimated)' : '') : 'N/A'],
-        ['Columns', f.column_count != null ? f.column_count : 'N/A'],
-        ['Encoding', f.encoding || 'N/A'],
-        ['Codepage', f.codepage || 'N/A'],
-        ['Confidence', f.encoding_confidence != null ? f.encoding_confidence + '%' : 'N/A'],
-        ['Delimiter', f.delimiter ? repr(f.delimiter) : 'N/A'],
-        ['Has Header', f.has_header != null ? String(f.has_header) : 'N/A'],
-        ['Compression', f.compression || 'N/A'],
-        ['JSON Format', f.json_format || 'N/A'],
-    ];
-    rows.forEach(([k,v]) => { html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v)) + '</td></tr>'; });
-    html += '</table>';
-
-    // JSON nesting info
-    if (f.json_nesting && Object.keys(f.json_nesting).length) {
-        html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">JSON Nesting</h3><table class="schema-table"><thead><tr><th>Column</th><th>Nesting</th></tr></thead><tbody>';
-        Object.entries(f.json_nesting).forEach(([col, kind]) => {
-            html += '<tr><td>' + esc(col) + '</td><td>' + esc(kind) + '</td></tr>';
-        });
-        html += '</tbody></table>';
-    }
-
-    if (f.schema && f.schema.length) {
-        html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Schema (' + f.schema.length + ' columns)</h3>';
-        html += '<table class="schema-table"><thead><tr><th>#</th><th>Column</th><th>Detected Type</th><th>SQL Type</th></tr></thead><tbody>';
-        const typeMap = buildQuickTypeMap();
-        f.schema.forEach(([name, dtype], i) => {
-            html += '<tr><td>' + (i+1) + '</td><td>' + esc(name) + '</td><td>' + esc(dtype) + '</td><td>' + esc(mapSqlType(dtype, typeMap)) + '</td></tr>';
-        });
-        html += '</tbody></table>';
-    }
-
-    if (f.parquet_metadata) {
-        html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Parquet Metadata</h3><table class="meta-table">';
-        const pm = f.parquet_metadata;
-        [['Created by', pm.created_by], ['Row groups', pm.num_row_groups], ['Serialised size', pm.serialized_size], ['Format version', pm.format_version]].forEach(([k,v]) => {
-            html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v != null ? v : '')) + '</td></tr>';
-        });
-        html += '</table>';
-    }
-
-    if (f.delta_metadata) {
-        html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Delta Lake Metadata</h3><table class="meta-table">';
-        const dm = f.delta_metadata;
-        [['Version', dm.version], ['Name', dm.name], ['Description', dm.description], ['Partition columns', JSON.stringify(dm.partition_columns)], ['Created', dm.created_time]].forEach(([k,v]) => {
-            html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v != null ? v : '')) + '</td></tr>';
-        });
-        html += '</table>';
-    }
-
-    setPaneHTML('metadata', html);
-}
-
-/* ================================================================
-   SQL SYNTAX HIGHLIGHTING (simple regex-based)
-   ================================================================ */
-function highlightSQL(sql) {
-    let h = esc(sql);
-    h = h.replace(/(--[^\n]*)/g, '<span class="cmt">$1</span>');
-    h = h.replace(/('(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
-    h = h.replace(/\b(\d+)\b/g, '<span class="num">$1</span>');
-    const kw = '\\b(SELECT|FROM|WHERE|INSERT|INTO|CREATE|TABLE|EXTERNAL|WITH|AS|AND|OR|NOT|NULL|SET|DECLARE|GO|USE|ALTER|DROP|IF|EXISTS|BEGIN|END|BULK|FORMAT|OPENROWSET|VIEW|TOP|INDEX|STATISTICS|COPY|FIRST_ROW|FIRSTROW|FIELD_TERMINATOR|FIELDTERMINATOR|ROW_TERMINATOR|ROWTERMINATOR|CODEPAGE|TABLOCK|MAXERRORS|BATCHSIZE|PARSER_VERSION|HEADER_ROW|DATA_SOURCE|LOCATION|FILE_FORMAT|FORMAT_TYPE|REJECT_TYPE|REJECT_VALUE|DISTRIBUTION|ROUND_ROBIN|HASH|HEAP|CLUSTERED|COLUMNSTORE|DATA_COMPRESSION|ENCODING|USE_TYPE_DEFAULT|STRING_DELIMITER|DATE_FORMAT|CROSS|APPLY|OPENJSON|JSON_VALUE|JSON_QUERY|JSON_MODIFY|JSON_PATH_EXISTS|JSON_OBJECT|JSON_ARRAY|ISJSON|FOR|PATH|ROOT|INCLUDE_NULL_VALUES|WITHOUT_ARRAY_WRAPPER|OPTION|VACUUM|OPTIMIZE|ZORDER|BY|ORDER|GROUP|HAVING|UNION|ALL|DISTINCT|ON|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|OVER|PARTITION|VALUES|OUTPUT|CONSTRAINT|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|IDENTITY|CREDENTIAL|SECRET|TYPE|BLOB_STORAGE|HADOOP|SINGLE_CLOB|NVARCHAR|VARCHAR|INT|BIGINT|SMALLINT|TINYINT|FLOAT|REAL|BIT|DATETIME2|DATE|TIME|DECIMAL|NUMERIC|VARBINARY|MAX|TRUE|FALSE|CSV|PARQUET|DELTA|JSON|ORC|DELIMITEDTEXT|RCFILE|MASTER|ENCRYPTION|PASSWORD|SCOPED|DATABASE|SYMMETRIC|FILE_TYPE|FIELDQUOTE)\\b';
-    h = h.replace(new RegExp(kw, 'gi'), m => '<span class="kw">' + m + '</span>');
-    return h;
-}
-
-/* ================================================================
-   FILE BROWSER MODAL
-   ================================================================ */
-function showBrowser() {
-    document.getElementById('browserModal').classList.remove('hidden');
-    checkedPaths.clear();
-    browseDir(browserDir || initialPath || '');
-}
-function closeBrowser() { document.getElementById('browserModal').classList.add('hidden'); }
-
-function browseDir(path) {
-    const body = document.getElementById('browserBody');
-    body.innerHTML = '<div class="placeholder"><span class="loading-spinner"></span> Loading&hellip;</div>';
-    fetch('/api/browse?path=' + encodeURIComponent(path))
-        .then(r => r.json())
-        .then(d => {
-            if (!d.success) { body.innerHTML = '<div class="placeholder">' + esc(d.error) + '</div>'; return; }
-            browserDir = d.current_path;
-            document.getElementById('browserPath').textContent = d.current_path;
-            body.innerHTML = '';
-            (d.items || []).forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'browser-item' + (item.type === 'directory' ? ' dir' : '');
-                if (item.type === 'directory') {
-                    div.textContent = '\uD83D\uDCC1 ' + item.name;
-                    div.addEventListener('click', () => browseDir(item.path));
-                } else {
-                    const cb = document.createElement('input');
-                    cb.type = 'checkbox';
-                    cb.checked = checkedPaths.has(item.path);
-                    cb.addEventListener('change', () => {
-                        if (cb.checked) checkedPaths.add(item.path);
-                        else checkedPaths.delete(item.path);
+        /* ================================================================
+           PREVIEW  — tabular data grid via /api/preview_table
+           ================================================================ */
+        function loadPreview(f) {
+            setPaneHTML('preview', '<div class="placeholder"><span class="loading-spinner"></span> Loading preview&hellip;</div>');
+            fetch('/api/preview_table/' + encodeURIComponent(f.file_path) + '?rows=200')
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.success) { setPaneHTML('preview', '<div class="placeholder">' + esc(d.error) + '</div>'); return; }
+                    let html = '<div class="data-grid-wrapper"><table class="data-grid"><thead><tr>';
+                    (d.columns || []).forEach(c => {
+                        html += '<th>' + esc(c.name) + '<span class="col-type">' + esc(c.type) + '</span></th>';
                     });
-                    const icon = item.type === 'delta_table' ? '\uD83D\uDDC3\uFE0F ' : '\uD83D\uDCC4 ';
-                    const span = document.createElement('span');
-                    span.textContent = icon + item.name + (item.type === 'delta_table' ? '/' : '');
-                    const bdg = document.createElement('span');
-                    bdg.className = 'badge ' + ({csv:'badge-csv',json:'badge-json',parquet:'badge-parquet',delta:'badge-delta',text:'badge-text',excel:'badge-excel'}[item.file_type]||'badge-text');
-                    bdg.textContent = item.file_type || item.type;
-                    div.appendChild(cb);
-                    div.appendChild(span);
-                    div.appendChild(bdg);
-                }
-                body.appendChild(div);
+                    html += '</tr></thead><tbody>';
+                    (d.rows || []).forEach(row => {
+                        html += '<tr>';
+                        row.forEach(v => { html += '<td>' + esc(v == null ? '' : String(v)) + '</td>'; });
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table></div>';
+                    if (d.truncated) html += '<div style="padding:8px;color:#64748b;font-size:12px;">Showing first 200 of ' + (d.total_rows || '?').toLocaleString() + ' rows</div>';
+                    setPaneHTML('preview', html);
+                    setStatus('Preview loaded', (d.rows || []).length + ' rows shown');
+                })
+                .catch(e => setPaneHTML('preview', '<div class="placeholder">Error: ' + esc(e.message) + '</div>'));
+        }
+
+        /* ================================================================
+           SQL GENERATION  — all statement types via /api/sql_ddl
+           ================================================================ */
+        function loadSQL(f) {
+            const ds = 'MyDataSource';
+            const sc = 'dbo';
+            const pl = document.getElementById('selPlatform').value || 'sql_server_2022';
+            const tnInput = document.getElementById('inpTableName');
+            const tn = tnInput ? tnInput.value || '' : '';
+            const su = composeStorageUrl(true) || '';
+            const allPanes = ['create_table', 'bulk_insert', 'openrowset', 'ext_table', 'json_functions', 'for_json', 'best_practices'];
+            allPanes.forEach(k =>
+                setPaneHTML(k, '<div class="placeholder"><span class="loading-spinner"></span> Generating&hellip;</div>')
+            );
+            let url = '/api/sql_ddl/' + encodeURIComponent(f.file_path) +
+                '?data_source=' + encodeURIComponent(ds) +
+                '&schema=' + encodeURIComponent(sc) +
+                '&target_platform=' + encodeURIComponent(pl);
+            if (tn) url += '&table_name=' + encodeURIComponent(tn);
+            if (su) url += '&storage_url=' + encodeURIComponent(su);
+            // Send schema overrides as JSON if any
+            const overrides = Object.keys(schemaOverrides).length ? JSON.stringify(schemaOverrides) : '';
+            if (overrides) url += '&schema_overrides=' + encodeURIComponent(overrides);
+
+            fetch(url)
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.success) {
+                        const err = '<div class="placeholder">' + esc(d.error || 'Unknown error') + '</div>';
+                        allPanes.forEach(k => setPaneHTML(k, err));
+                        return;
+                    }
+                    const s = d.statements || {};
+                    lastStatements = s;
+                    setSqlPane('create_table', s.create_table || '');
+                    setSqlPane('bulk_insert', s.bulk_insert || '');
+                    setSqlPane('openrowset', s.openrowset || '');
+                    setSqlPane('ext_table', (s.credential_setup && !s.credential_setup.includes('NOT AVAILABLE') ? s.credential_setup + '\n\n' : '') + (s.external_file_format || '') + '\n\n' + (s.create_external_table || ''));
+                    setSqlPane('json_functions', s.json_functions || '');
+                    setSqlPane('for_json', s.for_json || '');
+                    setSqlPane('best_practices', s.best_practices || '');
+                    setStatus('SQL generated for ' + ((f.file_path || '').split(/[\\/]/).pop()));
+                    setWizardStep(3);
+                })
+                .catch(e => {
+                    const err = '<div class="placeholder">Error: ' + esc(e.message) + '</div>';
+                    allPanes.forEach(k => setPaneHTML(k, err));
+                });
+        }
+
+        function setSqlPane(key, sql) {
+            const pane = document.getElementById('pane-' + key);
+            if (key === 'best_practices') {
+                pane.innerHTML = renderBestPractices(sql);
+                return;
+            }
+            // Build quick-start banner
+            const qs = TAB_QUICKSTART[key];
+            let banner = '';
+            if (qs) {
+                banner = '<div class="quick-start"><strong>' + esc(qs.title) + '</strong> &mdash; ' + esc(qs.desc) + ' <span style="color:#64748b">Best for: ' + esc(qs.best) + '</span>' +
+                    (qs.nextStep ? '<br><span style="color:#60a5fa;font-size:12px">&rarr; ' + esc(qs.nextStep) + '</span>' : '') +
+                    '</div>';
+            }
+            pane.innerHTML = banner +
+                '<div class="sql-block">' +
+                '<div class="sql-toolbar">' +
+                '<button class="btn btn-sm" onclick="copySql(this)" title="Copy to clipboard">Copy</button>' +
+                '<button class="btn btn-sm" onclick="downloadSqlPane(\'' + key + '\')" title="Download as .sql file">\u2B07 .sql</button>' +
+                '</div>' +
+                '<code></code></div>';
+            const code = pane.querySelector('code');
+            code.innerHTML = highlightSQL(sql);
+        }
+
+        function renderBestPractices(sql) {
+            const parsed = parseBestPractices(sql || '');
+            let html = '<div class="bp-layout">';
+
+            if (parsed.summary.length) {
+                html += '<div class="bp-grid">';
+                parsed.summary.forEach(item => {
+                    const badgeClass = ({ 'Best option': 'bp-badge-rec', 'Fastest path': 'bp-badge-fast', 'Lowest cost': 'bp-badge-cost', 'Staging': 'bp-badge-rec' })[item.label] || 'bp-badge-rec';
+                    html += '<div class="bp-card">' +
+                        '<div class="bp-badge ' + badgeClass + '">' + esc(item.label) + '</div>' +
+                        '<div class="bp-item-value">' + esc(item.value) + '</div>' +
+                        '</div>';
+                });
+                html += '</div>';
+            }
+
+            if (parsed.warnings.length) {
+                html += '<div class="bp-card"><div class="bp-badge bp-badge-risk">Watch-outs</div><h3>Risk checks</h3><ul>';
+                parsed.warnings.forEach(w => { html += '<li>' + esc(w) + '</li>'; });
+                html += '</ul></div>';
+            }
+
+            parsed.sections.forEach(section => {
+                html += '<div class="bp-card"><h3>' + esc(section.title) + '</h3><ul>';
+                section.items.forEach(item => { html += '<li>' + esc(item) + '</li>'; });
+                html += '</ul></div>';
             });
-        })
-        .catch(e => { body.innerHTML = '<div class="placeholder">Error: ' + esc(e.message) + '</div>'; });
-}
 
-function analyseChecked() {
-    if (!checkedPaths.size) { alert('Select at least one file'); return; }
-    closeBrowser();
-    setStatus('Analysing ' + checkedPaths.size + ' file(s)...');
-    fetch('/api/analyze_files', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({files: [...checkedPaths]})
-    }).then(r=>r.json()).then(d => {
-        if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Analysed ' + d.count + ' file(s)'); }
-        else setStatus('Error: ' + (d.error||''));
-    }).catch(e => setStatus('Error: ' + e.message));
-}
+            if (parsed.validation.length) {
+                html += '<div class="bp-card"><h3>Validation SQL</h3><div class="bp-code">' + esc(parsed.validation.join('\n')) + '</div></div>';
+            }
 
-function selectBrowserFolder() {
-    if (!browserDir) return;
-    closeBrowser();
-    analyzeFolder(browserDir);
-}
+            if (!parsed.summary.length && !parsed.warnings.length && !parsed.sections.length && !parsed.validation.length) {
+                html += '<div class="sql-block"><code>' + highlightSQL(sql) + '</code></div>';
+            }
 
-function analyzeFolder(folder) {
-    folder = folder || browserDir || initialPath;
-    if (!folder) { alert('No folder selected'); return; }
-    setStatus('Scanning folder...');
-    fetch('/api/analyze_folder', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({folder: folder})
-    }).then(r=>r.json()).then(d => {
-        if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Found ' + d.count + ' supported file(s)'); }
-        else setStatus('Error: ' + (d.error||''));
-    }).catch(e => setStatus('Error: ' + e.message));
-}
+            html += '</div>';
+            return html;
+        }
 
-function clearAll() {
-    currentFiles = []; selectedIdx = -1; lastStatements = {}; schemaOverrides = {};
-    renderFileList();
-    ['preview','metadata','create_table','bulk_insert','openrowset','ext_table','copy_into','json_functions','for_json','schema_editor','best_practices'].forEach(k =>
-        setPaneHTML(k, '<div class="placeholder">Select a file</div>'));
-    setStatus('Cleared');
-}
+        function parseBestPractices(sql) {
+            const lines = String(sql || '').split(/\r?\n/);
+            const result = { summary: [], warnings: [], sections: [], validation: [] };
+            let mode = 'other';
+            let currentSection = null;
 
-/* ================================================================
-   COPY SQL TO CLIPBOARD
-   ================================================================ */
-function copySql(btn) {
-    const code = btn.closest('.sql-block').querySelector('code');
-    const text = code ? code.textContent : '';
-    navigator.clipboard.writeText(text).then(() => {
-        const orig = btn.textContent; btn.textContent = 'Copied!';
-        setTimeout(() => btn.textContent = orig, 1500);
-    }).catch(() => setStatus('Clipboard copy failed'));
-}
+            function flushSection() {
+                if (currentSection && currentSection.items.length) result.sections.push(currentSection);
+                currentSection = null;
+            }
 
-/* ================================================================
-   HELPERS
-   ================================================================ */
-function setPaneHTML(key, html) { document.getElementById('pane-' + key).innerHTML = html; }
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                const comment = trimmed.startsWith('--') ? trimmed.replace(/^--\s?/, '') : null;
+                if (!comment && trimmed) {
+                    if (mode === 'validation') result.validation.push(line);
+                    return;
+                }
+                if (!comment) return;
+                if (!comment || /^=+$/.test(comment)) return;
 
-function esc(s) {
-    const d = document.createElement('div');
-    d.appendChild(document.createTextNode(s));
-    return d.innerHTML;
-}
+                if (comment === 'RECOMMENDED PATH') {
+                    flushSection();
+                    mode = 'summary';
+                    return;
+                }
+                if (comment === 'WARNINGS / WATCH-OUTS') {
+                    flushSection();
+                    mode = 'warnings';
+                    return;
+                }
+                if (comment === 'VALIDATION SQL AFTER LOAD') {
+                    flushSection();
+                    mode = 'validation';
+                    return;
+                }
 
-function repr(ch) {
-    if (ch === ',') return 'comma (,)';
-    if (ch === '\t') return 'tab (\\t)';
-    if (ch === '|') return 'pipe (|)';
-    if (ch === ';') return 'semicolon (;)';
-    return JSON.stringify(ch);
-}
+                if (/^\d+\.\s/.test(comment)) {
+                    flushSection();
+                    mode = 'section';
+                    currentSection = { title: comment.replace(/^\d+\.\s*/, ''), items: [] };
+                    return;
+                }
 
-function fmtSize(b) {
-    if (!b) return '0 B';
-    const u = ['B','KB','MB','GB','TB'];
-    let i = 0;
-    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
-    return b.toFixed(1) + ' ' + u[i];
-}
+                if (mode === 'summary' && comment.includes(':')) {
+                    const parts = comment.split(':');
+                    result.summary.push({ label: parts.shift().trim(), value: parts.join(':').trim() });
+                    return;
+                }
+                if (mode === 'warnings') {
+                    result.warnings.push(comment);
+                    return;
+                }
+                if (mode === 'section' && currentSection) {
+                    currentSection.items.push(comment);
+                }
+            });
 
-function buildQuickTypeMap() {
-    return {
-        'int64':'BIGINT','int32':'INT','int16':'SMALLINT','int8':'TINYINT','int':'INT',
-        'uint64':'DECIMAL(20,0)','uint32':'BIGINT','uint16':'INT','uint8':'SMALLINT',
-        'float64':'FLOAT','float32':'REAL','float':'FLOAT','double':'FLOAT',
-        'bool':'BIT','boolean':'BIT','object':'NVARCHAR(255)','str':'NVARCHAR(255)',
-        'string':'NVARCHAR(255)','large_string':'NVARCHAR(MAX)',
-        'datetime64[ns]':'DATETIME2(7)','datetime64[us]':'DATETIME2(6)',
-        'timestamp[us]':'DATETIME2(6)','timestamp[ns]':'DATETIME2(7)','timestamp':'DATETIME2(7)',
-        'date32':'DATE','date':'DATE','time':'TIME(7)','time64[us]':'TIME(6)',
-        'decimal128':'DECIMAL(38,10)','binary':'VARBINARY(MAX)',
-        'large_binary':'VARBINARY(MAX)','list':'NVARCHAR(MAX)','struct':'NVARCHAR(MAX)',
-        'dict':'NVARCHAR(MAX)','map':'NVARCHAR(MAX)',
-    };
-}
-function mapSqlType(dtype, m) {
-    const d = String(dtype).toLowerCase();
-    if (m[d]) return m[d];
-    for (const k of Object.keys(m)) { if (d.includes(k)) return m[k]; }
-    if (d.includes('decimal') || d.includes('numeric')) return 'DECIMAL(18,4)';
-    return 'NVARCHAR(255)';
-}
-</script>
+            flushSection();
+            return result;
+        }
+
+        /* ================================================================
+           SCHEMA EDITOR
+           ================================================================ */
+        function loadSchemaEditor(f) {
+            if (!f.schema || !f.schema.length) {
+                setPaneHTML('schema_editor', '<div class="placeholder">No schema detected for this file</div>');
+                return;
+            }
+            const typeMap = buildQuickTypeMap();
+            const sqlTypes = ['BIGINT', 'INT', 'SMALLINT', 'TINYINT', 'BIT', 'FLOAT', 'REAL', 'DECIMAL(18,2)', 'DECIMAL(38,10)',
+                'NVARCHAR(50)', 'NVARCHAR(100)', 'NVARCHAR(255)', 'NVARCHAR(500)', 'NVARCHAR(1000)', 'NVARCHAR(4000)', 'NVARCHAR(MAX)',
+                'VARCHAR(50)', 'VARCHAR(100)', 'VARCHAR(255)', 'VARCHAR(MAX)',
+                'DATE', 'TIME(7)', 'DATETIME2(7)', 'DATETIME2(6)',
+                'VARBINARY(MAX)', 'UNIQUEIDENTIFIER', 'XML'];
+
+            let html = '<div class="schema-editor-toolbar">' +
+                '<button class="btn btn-sm btn-primary" onclick="applySchemaOverrides()">Apply &amp; Regenerate SQL</button>' +
+                '<button class="btn btn-sm" onclick="resetSchemaOverrides()">Reset to Detected</button>' +
+                '<span style="color:#64748b;font-size:12px;margin-left:12px;">Edit column names or SQL types below, then click Apply.</span>' +
+                '</div>';
+            html += '<div class="data-grid-wrapper" style="max-height:calc(100% - 50px)"><table class="schema-editor-table"><thead><tr>' +
+                '<th>#</th><th>Original Column</th><th>Custom Name</th><th>Detected Type</th><th>SQL Type Override</th><th>Nullable</th><th>Exclude</th></tr></thead><tbody>';
+
+            const nullableCols = new Set(f.nullable_columns || []);
+            f.schema.forEach(([name, dtype], i) => {
+                const detectedSql = mapSqlType(dtype, typeMap);
+                const ov = schemaOverrides[name] || {};
+                html += '<tr>' +
+                    '<td>' + (i + 1) + '</td>' +
+                    '<td>' + esc(name) + '</td>' +
+                    '<td><input data-col="' + esc(name) + '" data-field="colName" value="' + esc(ov.colName || name) + '"></td>' +
+                    '<td style="color:#64748b">' + esc(dtype) + ' &rarr; ' + esc(detectedSql) + '</td>' +
+                    '<td><select data-col="' + esc(name) + '" data-field="sqlType">';
+                // Build options: detected first, then standard list
+                const currentType = ov.sqlType || detectedSql;
+                const allOpts = [detectedSql, ...sqlTypes.filter(t => t !== detectedSql)];
+                allOpts.forEach(t => {
+                    html += '<option value="' + esc(t) + '"' + (t === currentType ? ' selected' : '') + '>' + esc(t) + '</option>';
+                });
+                html += '</select></td>' +
+                    '<td><input type="checkbox" data-col="' + esc(name) + '" data-field="nullable"' + (ov.nullable !== undefined ? (ov.nullable ? ' checked' : '') : (nullableCols.has(name) ? ' checked' : '')) + '></td>' +
+                    '<td><input type="checkbox" data-col="' + esc(name) + '" data-field="excluded"' + (ov.excluded ? ' checked' : '') + '></td>' +
+                    '</tr>';
+            });
+            html += '</tbody></table></div>';
+            setPaneHTML('schema_editor', html);
+        }
+
+        function applySchemaOverrides() {
+            const f = currentFiles[selectedIdx];
+            if (!f) return;
+            schemaOverrides = {};
+            document.querySelectorAll('#pane-schema_editor input[data-col], #pane-schema_editor select[data-col]').forEach(el => {
+                const col = el.dataset.col;
+                const field = el.dataset.field;
+                if (!schemaOverrides[col]) schemaOverrides[col] = {};
+                if (field === 'nullable' || field === 'excluded') schemaOverrides[col][field] = el.checked;
+                else schemaOverrides[col][field] = el.value;
+            });
+            loadSQL(f);
+            setStatus('Schema overrides applied — SQL regenerated');
+        }
+        function resetSchemaOverrides() {
+            schemaOverrides = {};
+            const f = currentFiles[selectedIdx];
+            if (f) { loadSchemaEditor(f); loadSQL(f); }
+            setStatus('Schema reset to detected types');
+        }
+
+        /* ================================================================
+           EXPORT ALL SQL  — download a single .sql file
+           ================================================================ */
+        function exportAllSQL() {
+            if (!Object.keys(lastStatements).length) { alert('Generate SQL first by selecting a file'); return; }
+            const pl = document.getElementById('selPlatform');
+            const platformLabel = pl.options[pl.selectedIndex].text;
+            const fileName = selectedIdx >= 0 ? (currentFiles[selectedIdx].file_path || 'file').split(/[\\/]/).pop() : 'file';
+            let content = '-- ==========================================================================\n';
+            content += '-- External File Detection Tool  —  Generated T-SQL\n';
+            content += '-- File     : ' + fileName + '\n';
+            content += '-- Platform : ' + platformLabel + '\n';
+            content += '-- Date     : ' + new Date().toISOString().slice(0, 10) + '\n';
+            content += '-- ==========================================================================\n\n';
+            const order = ['create_table', 'bulk_insert', 'openrowset', 'external_file_format', 'create_external_table', 'json_functions', 'for_json', 'best_practices'];
+            order.forEach(key => {
+                const sql = lastStatements[key];
+                if (sql && sql.trim()) {
+                    content += sql + '\n\nGO\n\n';
+                }
+            });
+            downloadText(content, fileName.replace(/\.[^.]+$/, '') + '_all_sql.sql');
+        }
+
+        function downloadSqlPane(key) {
+            const pane = document.getElementById('pane-' + key);
+            const code = pane ? pane.querySelector('code') : null;
+            const text = code ? code.textContent : '';
+            if (!text.trim()) { alert('No SQL to download'); return; }
+            const fileName = selectedIdx >= 0 ? (currentFiles[selectedIdx].file_path || 'file').split(/[\\/]/).pop() : 'file';
+            downloadText(text, fileName.replace(/\.[^.]+$/, '') + '_' + key + '.sql');
+        }
+
+        function downloadText(text, filename) {
+            const blob = new Blob([text], { type: 'text/sql;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }
+
+        /* ================================================================
+           METADATA
+           ================================================================ */
+        function loadMetadata(f) {
+            let html = '';
+            // Show encoding warning banner if present
+            if (f.encoding_warning) {
+                html += '<div class="quick-start" style="border-color:#fbbf24;background:#1c1508"><strong style="color:#fbbf24">&#9888; Encoding Warning</strong> &mdash; ' + esc(f.encoding_warning) + '</div>';
+            }
+            html += '<table class="meta-table">';
+            const rows = [
+                ['File', f.file_path],
+                ['Type', (f.file_type || '').toUpperCase()],
+                ['Size', fmtSize(f.file_size || 0)],
+                ['Rows', f.row_count != null ? Number(f.row_count).toLocaleString() + (f.row_count_estimated ? ' (estimated)' : '') : 'N/A'],
+                ['Columns', f.column_count != null ? f.column_count : 'N/A'],
+                ['Encoding', f.encoding || 'N/A'],
+                ['Codepage', f.codepage || 'N/A'],
+                ['Confidence', f.encoding_confidence != null ? f.encoding_confidence + '%' : 'N/A'],
+                ['Delimiter', f.delimiter ? repr(f.delimiter) : 'N/A'],
+                ['Has Header', f.has_header != null ? String(f.has_header) : 'N/A'],
+                ['Compression', f.compression || 'N/A'],
+                ['JSON Format', f.json_format || 'N/A'],
+            ];
+            rows.forEach(([k, v]) => { html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v)) + '</td></tr>'; });
+            html += '</table>';
+
+            // JSON nesting info
+            if (f.json_nesting && Object.keys(f.json_nesting).length) {
+                html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">JSON Nesting</h3><table class="schema-table"><thead><tr><th>Column</th><th>Nesting</th></tr></thead><tbody>';
+                Object.entries(f.json_nesting).forEach(([col, kind]) => {
+                    html += '<tr><td>' + esc(col) + '</td><td>' + esc(kind) + '</td></tr>';
+                });
+                html += '</tbody></table>';
+            }
+
+            if (f.schema && f.schema.length) {
+                html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Schema (' + f.schema.length + ' columns)</h3>';
+                html += '<table class="schema-table"><thead><tr><th>#</th><th>Column</th><th>Detected Type</th><th>SQL Type</th></tr></thead><tbody>';
+                const typeMap = buildQuickTypeMap();
+                f.schema.forEach(([name, dtype], i) => {
+                    html += '<tr><td>' + (i + 1) + '</td><td>' + esc(name) + '</td><td>' + esc(dtype) + '</td><td>' + esc(mapSqlType(dtype, typeMap)) + '</td></tr>';
+                });
+                html += '</tbody></table>';
+            }
+
+            if (f.parquet_metadata) {
+                html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Parquet Metadata</h3><table class="meta-table">';
+                const pm = f.parquet_metadata;
+                [['Created by', pm.created_by], ['Row groups', pm.num_row_groups], ['Serialised size', pm.serialized_size], ['Format version', pm.format_version]].forEach(([k, v]) => {
+                    html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v != null ? v : '')) + '</td></tr>';
+                });
+                html += '</table>';
+            }
+
+            if (f.delta_metadata) {
+                html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Delta Lake Metadata</h3><table class="meta-table">';
+                const dm = f.delta_metadata;
+                [['Version', dm.version], ['Name', dm.name], ['Description', dm.description], ['Partition columns', JSON.stringify(dm.partition_columns)], ['Created', dm.created_time]].forEach(([k, v]) => {
+                    html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v != null ? v : '')) + '</td></tr>';
+                });
+                html += '</table>';
+            }
+
+            if (f.iceberg_metadata) {
+                html += '<h3 style="margin:20px 0 8px;font-size:14px;color:#94a3b8;">Iceberg Metadata</h3><table class="meta-table">';
+                const im = f.iceberg_metadata;
+                [['Format version', im.format_version], ['Table UUID', im.table_uuid], ['Location', im.location], ['Last updated', im.last_updated], ['Partition spec', JSON.stringify(im.partition_spec)]].forEach(([k, v]) => {
+                    html += '<tr><th>' + esc(k) + '</th><td>' + esc(String(v != null ? v : '')) + '</td></tr>';
+                });
+                html += '</table>';
+            }
+
+            setPaneHTML('metadata', html);
+        }
+
+        /* ================================================================
+           SQL SYNTAX HIGHLIGHTING (simple regex-based)
+           ================================================================ */
+        function highlightSQL(sql) {
+            let h = esc(sql);
+            h = h.replace(/(--[^\n]*)/g, '<span class="cmt">$1</span>');
+            h = h.replace(/('(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
+            h = h.replace(/\b(\d+)\b/g, '<span class="num">$1</span>');
+            const kw = '\\b(SELECT|FROM|WHERE|INSERT|INTO|CREATE|TABLE|EXTERNAL|WITH|AS|AND|OR|NOT|NULL|SET|DECLARE|GO|USE|ALTER|DROP|IF|EXISTS|BEGIN|END|BULK|FORMAT|OPENROWSET|VIEW|TOP|INDEX|STATISTICS|COPY|FIRST_ROW|FIRSTROW|FIELD_TERMINATOR|FIELDTERMINATOR|ROW_TERMINATOR|ROWTERMINATOR|CODEPAGE|TABLOCK|MAXERRORS|BATCHSIZE|PARSER_VERSION|HEADER_ROW|DATA_SOURCE|LOCATION|FILE_FORMAT|FORMAT_TYPE|REJECT_TYPE|REJECT_VALUE|DISTRIBUTION|ROUND_ROBIN|HASH|HEAP|CLUSTERED|COLUMNSTORE|DATA_COMPRESSION|ENCODING|USE_TYPE_DEFAULT|STRING_DELIMITER|DATE_FORMAT|CROSS|APPLY|OPENJSON|JSON_VALUE|JSON_QUERY|JSON_MODIFY|JSON_PATH_EXISTS|JSON_OBJECT|JSON_ARRAY|ISJSON|FOR|PATH|ROOT|INCLUDE_NULL_VALUES|WITHOUT_ARRAY_WRAPPER|OPTION|VACUUM|OPTIMIZE|ZORDER|BY|ORDER|GROUP|HAVING|UNION|ALL|DISTINCT|ON|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|OVER|PARTITION|VALUES|OUTPUT|CONSTRAINT|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|IDENTITY|CREDENTIAL|SECRET|TYPE|BLOB_STORAGE|HADOOP|SINGLE_CLOB|NVARCHAR|VARCHAR|INT|BIGINT|SMALLINT|TINYINT|FLOAT|REAL|BIT|DATETIME2|DATE|TIME|DECIMAL|NUMERIC|VARBINARY|MAX|TRUE|FALSE|CSV|PARQUET|DELTA|JSON|ORC|DELIMITEDTEXT|RCFILE|MASTER|ENCRYPTION|PASSWORD|SCOPED|DATABASE|SYMMETRIC|FILE_TYPE|FIELDQUOTE)\\b';
+            h = h.replace(new RegExp(kw, 'gi'), m => '<span class="kw">' + m + '</span>');
+            return h;
+        }
+
+        /* ================================================================
+           FILE BROWSER MODAL
+           ================================================================ */
+        function showBrowser() {
+            document.getElementById('browserModal').classList.remove('hidden');
+            checkedPaths.clear();
+            browseDir(browserDir || initialPath || '');
+        }
+        function closeBrowser() { document.getElementById('browserModal').classList.add('hidden'); }
+
+        function browseDir(path) {
+            const body = document.getElementById('browserBody');
+            body.innerHTML = '<div class="placeholder"><span class="loading-spinner"></span> Loading&hellip;</div>';
+            fetch('/api/browse?path=' + encodeURIComponent(path))
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.success) { body.innerHTML = '<div class="placeholder">' + esc(d.error) + '</div>'; return; }
+                    browserDir = d.current_path;
+                    document.getElementById('browserPath').textContent = d.current_path;
+                    body.innerHTML = '';
+                    (d.items || []).forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'browser-item' + (item.type === 'directory' ? ' dir' : '');
+                        if (item.type === 'directory') {
+                            div.textContent = '\uD83D\uDCC1 ' + item.name;
+                            div.addEventListener('click', () => browseDir(item.path));
+                        } else {
+                            const cb = document.createElement('input');
+                            cb.type = 'checkbox';
+                            cb.checked = checkedPaths.has(item.path);
+                            cb.addEventListener('change', () => {
+                                if (cb.checked) checkedPaths.add(item.path);
+                                else checkedPaths.delete(item.path);
+                            });
+                            const icon = item.type === 'delta_table' ? '\uD83D\uDDC3\uFE0F ' : '\uD83D\uDCC4 ';
+                            const span = document.createElement('span');
+                            span.textContent = icon + item.name + (item.type === 'delta_table' ? '/' : '');
+                            const bdg = document.createElement('span');
+                            bdg.className = 'badge ' + ({ csv: 'badge-csv', json: 'badge-json', parquet: 'badge-parquet', delta: 'badge-delta', iceberg: 'badge-iceberg', text: 'badge-text', excel: 'badge-excel' }[item.file_type] || 'badge-text');
+                            bdg.textContent = item.file_type || item.type;
+                            div.appendChild(cb);
+                            div.appendChild(span);
+                            div.appendChild(bdg);
+                        }
+                        body.appendChild(div);
+                    });
+                })
+                .catch(e => { body.innerHTML = '<div class="placeholder">Error: ' + esc(e.message) + '</div>'; });
+        }
+
+        function analyseChecked() {
+            if (!checkedPaths.size) { alert('Select at least one file'); return; }
+            closeBrowser();
+            setStatus('Analysing ' + checkedPaths.size + ' file(s)...');
+            fetch('/api/analyze_files', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ files: [...checkedPaths] })
+            }).then(r => r.json()).then(d => {
+                if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Analysed ' + d.count + ' file(s)'); if (d.files.length) selectFile(0); }
+                else setStatus('Error: ' + (d.error || ''));
+            }).catch(e => setStatus('Error: ' + e.message));
+        }
+
+        function selectBrowserFolder() {
+            if (!browserDir) return;
+            closeBrowser();
+            analyzeFolder(browserDir);
+        }
+
+        function analyzeFolder(folder) {
+            folder = folder || browserDir || initialPath;
+            if (!folder) { alert('No folder selected'); return; }
+            setStatus('Scanning folder...');
+            fetch('/api/analyze_folder', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folder: folder })
+            }).then(r => r.json()).then(d => {
+                if (d.success) { currentFiles = d.files; selectedIdx = -1; renderFileList(); setStatus('Found ' + d.count + ' supported file(s)'); if (d.files.length) selectFile(0); }
+                else setStatus('Error: ' + (d.error || ''));
+            }).catch(e => setStatus('Error: ' + e.message));
+        }
+
+        function clearAll() {
+            currentFiles = []; selectedIdx = -1; lastStatements = {}; schemaOverrides = {};
+            renderFileList();
+            ['preview', 'metadata', 'create_table', 'bulk_insert', 'openrowset', 'ext_table', 'json_functions', 'for_json', 'schema_editor', 'best_practices'].forEach(k =>
+                setPaneHTML(k, '<div class="placeholder">Select a file</div>'));
+            setWizardStep(1);
+            document.getElementById('settingsRow').style.display = 'none';
+            setStatus('Cleared');
+        }
+
+        /* ================================================================
+           COPY SQL TO CLIPBOARD
+           ================================================================ */
+        function copySql(btn) {
+            const code = btn.closest('.sql-block').querySelector('code');
+            const text = code ? code.textContent : '';
+            navigator.clipboard.writeText(text).then(() => {
+                const orig = btn.textContent; btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = orig, 1500);
+            }).catch(() => setStatus('Clipboard copy failed'));
+        }
+
+        /* ================================================================
+           HELPERS
+           ================================================================ */
+        function setPaneHTML(key, html) { document.getElementById('pane-' + key).innerHTML = html; }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.appendChild(document.createTextNode(s));
+            return d.innerHTML;
+        }
+
+        function repr(ch) {
+            if (ch === ',') return 'comma (,)';
+            if (ch === '\t') return 'tab (\\t)';
+            if (ch === '|') return 'pipe (|)';
+            if (ch === ';') return 'semicolon (;)';
+            return JSON.stringify(ch);
+        }
+
+        function fmtSize(b) {
+            if (!b) return '0 B';
+            const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+            return b.toFixed(1) + ' ' + u[i];
+        }
+
+        function buildQuickTypeMap() {
+            return {
+                'int64': 'BIGINT', 'int32': 'INT', 'int16': 'SMALLINT', 'int8': 'TINYINT', 'int': 'INT',
+                'uint64': 'DECIMAL(20,0)', 'uint32': 'BIGINT', 'uint16': 'INT', 'uint8': 'SMALLINT',
+                'float64': 'FLOAT', 'float32': 'REAL', 'float': 'FLOAT', 'double': 'FLOAT',
+                'bool': 'BIT', 'boolean': 'BIT', 'object': 'NVARCHAR(255)', 'str': 'NVARCHAR(255)',
+                'string': 'NVARCHAR(255)', 'large_string': 'NVARCHAR(MAX)',
+                'datetime64[ns]': 'DATETIME2(7)', 'datetime64[us]': 'DATETIME2(6)',
+                'timestamp[us]': 'DATETIME2(6)', 'timestamp[ns]': 'DATETIME2(7)', 'timestamp': 'DATETIME2(7)',
+                'date32': 'DATE', 'date': 'DATE', 'time': 'TIME(7)', 'time64[us]': 'TIME(6)',
+                'decimal128': 'DECIMAL(38,10)', 'binary': 'VARBINARY(MAX)',
+                'large_binary': 'VARBINARY(MAX)', 'list': 'NVARCHAR(MAX)', 'struct': 'NVARCHAR(MAX)',
+                'dict': 'NVARCHAR(MAX)', 'map': 'NVARCHAR(MAX)',
+            };
+        }
+        function mapSqlType(dtype, m) {
+            const d = String(dtype).toLowerCase();
+            if (m[d]) return m[d];
+            for (const k of Object.keys(m)) { if (d.includes(k)) return m[k]; }
+            if (d.includes('decimal') || d.includes('numeric')) return 'DECIMAL(18,4)';
+            return 'NVARCHAR(255)';
+        }
+    </script>
 </body>
+
 </html>

@@ -3,15 +3,36 @@
 import os
 import json
 import csv
+import math
 import logging
-import mimetypes
+import threading
 from copy import deepcopy
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
-import pandas as pd
-import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
+
+# Lazy imports for heavy dependencies (deferred to first use)
+pd = None  # pandas
+pq = None  # pyarrow.parquet
+
+
+def _ensure_pandas():
+    """Lazily import pandas on first use."""
+    global pd
+    if pd is None:
+        import pandas as _pd
+        pd = _pd
+    return pd
+
+
+def _ensure_pyarrow():
+    """Lazily import pyarrow.parquet on first use."""
+    global pq
+    if pq is None:
+        import pyarrow.parquet as _pq
+        pq = _pq
+    return pq
 
 # --- Constants ---
 CSV_SAMPLE_SIZE = 4096
@@ -21,6 +42,8 @@ LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
 
 def _json_safe(val: Any) -> Any:
     """Return a JSON-serialisable representation of *val* for sample storage."""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
     if isinstance(val, (str, int, float, bool, type(None))):
         return val
     return str(val)
@@ -65,6 +88,7 @@ class FileDetector:
 
     def __init__(self):
         """Initialize the file detector."""
+        self._cache_lock = threading.Lock()
         self._encoding_cache: Dict[Tuple[str, float, int], Tuple[str, float]] = {}
         self._metadata_cache: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
 
@@ -82,6 +106,17 @@ class FileDetector:
             return False
         return os.path.isdir(os.path.join(directory_path, '_delta_log'))
 
+    def is_iceberg_table_directory(self, directory_path: str) -> bool:
+        """Return True if *directory_path* looks like an Apache Iceberg table folder."""
+        if not os.path.isdir(directory_path):
+            return False
+        metadata_dir = os.path.join(directory_path, 'metadata')
+        if not os.path.isdir(metadata_dir):
+            return False
+        # Look for any v*.metadata.json file
+        import glob
+        return bool(glob.glob(os.path.join(metadata_dir, 'v*.metadata.json')))
+
     # ------------------------------------------------------------------
     # Type detection
     # ------------------------------------------------------------------
@@ -90,6 +125,8 @@ class FileDetector:
         """Detect the type of a file based on extension and content analysis."""
         if self.is_delta_table_directory(file_path):
             return 'delta'
+        if self.is_iceberg_table_directory(file_path):
+            return 'iceberg'
         if os.path.isdir(file_path):
             return 'unknown'
 
@@ -115,13 +152,21 @@ class FileDetector:
         except Exception:
             pass
 
-        # JSON
+        # JSON — only read the first few KB instead of the whole file
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                json.load(f)
-            return 'json'
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
+                sample = f.read(8192)
+            sample_stripped = sample.lstrip()
+            if sample_stripped and sample_stripped[0] in ('{', '['):
+                json.loads(sample_stripped)
+                return 'json'
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            # Partial read may fail to parse; check if it starts like JSON
+            try:
+                if sample_stripped and sample_stripped[0] in ('{', '['):
+                    return 'json'
+            except Exception:
+                pass
 
         # CSV / delimited text
         try:
@@ -142,8 +187,10 @@ class FileDetector:
     def detect_encoding(self, file_path: str) -> Tuple[str, float]:
         """Detect file encoding using chardet when available."""
         signature = self._get_file_signature(file_path)
-        if signature and signature in self._encoding_cache:
-            return self._encoding_cache[signature]
+        if signature:
+            with self._cache_lock:
+                if signature in self._encoding_cache:
+                    return self._encoding_cache[signature]
 
         try:
             import chardet
@@ -154,7 +201,8 @@ class FileDetector:
             confidence = float(result.get('confidence') or 0.0)
             detected = (encoding, confidence)
             if signature:
-                self._encoding_cache[signature] = detected
+                with self._cache_lock:
+                    self._encoding_cache[signature] = detected
             return detected
         except ImportError:
             pass
@@ -165,13 +213,15 @@ class FileDetector:
                     f.read(4096)
                 detected = (enc, 0.5)
                 if signature:
-                    self._encoding_cache[signature] = detected
+                    with self._cache_lock:
+                        self._encoding_cache[signature] = detected
                 return detected
             except (UnicodeDecodeError, LookupError):
                 continue
         detected = ('utf-8', 0.0)
         if signature:
-            self._encoding_cache[signature] = detected
+            with self._cache_lock:
+                self._encoding_cache[signature] = detected
         return detected
 
     def encoding_to_codepage(self, encoding: str) -> str:
@@ -186,8 +236,10 @@ class FileDetector:
     def analyze_file_metadata(self, file_path: str) -> Dict[str, Any]:
         """Analyse file metadata including schema, size, encoding and format details."""
         signature = self._get_file_signature(file_path)
-        if signature and signature in self._metadata_cache:
-            return deepcopy(self._metadata_cache[signature])
+        if signature:
+            with self._cache_lock:
+                if signature in self._metadata_cache:
+                    return deepcopy(self._metadata_cache[signature])
 
         file_type = self.detect_file_type(file_path)
         if file_type in ('csv', 'text', 'json'):
@@ -224,6 +276,13 @@ class FileDetector:
             'delta_metadata': None,
         }
 
+        # Warn if encoding detection confidence is low
+        if file_type in ('csv', 'text', 'json') and enc_confidence < 0.5:
+            metadata['encoding_warning'] = (
+                f'Low confidence ({round(enc_confidence * 100)}%) for encoding "{encoding}". '
+                f'Verify encoding manually or specify it explicitly.'
+            )
+
         try:
             if file_type == 'csv':
                 metadata.update(self._analyze_csv(file_path, encoding))
@@ -231,6 +290,8 @@ class FileDetector:
                 metadata.update(self._analyze_parquet(file_path))
             elif file_type == 'delta':
                 metadata.update(self._analyze_delta(file_path))
+            elif file_type == 'iceberg':
+                metadata.update(self._analyze_iceberg(file_path))
             elif file_type == 'json':
                 metadata.update(self._analyze_json(file_path, encoding))
             elif file_type == 'excel':
@@ -241,7 +302,8 @@ class FileDetector:
             metadata['error'] = str(e)
 
         if signature:
-            self._metadata_cache[signature] = deepcopy(metadata)
+            with self._cache_lock:
+                self._metadata_cache[signature] = deepcopy(metadata)
         return metadata
 
     # ------------------------------------------------------------------
@@ -250,6 +312,7 @@ class FileDetector:
 
     def _analyze_csv(self, file_path: str, encoding: str = 'utf-8') -> Dict[str, Any]:
         """Analyse CSV / TSV file metadata."""
+        _ensure_pandas()
         result: Dict[str, Any] = {}
         try:
             delimiter = ','
@@ -268,8 +331,8 @@ class FileDetector:
             result['delimiter'] = delimiter
             result['has_header'] = has_header
 
-            df = pd.read_csv(file_path, nrows=200, encoding=encoding,
-                             sep=delimiter, low_memory=False, on_bad_lines='skip')
+            df = pd.read_csv(file_path, nrows=1000, encoding=encoding,
+                             sep=delimiter, low_memory=False, on_bad_lines='warn')
             result['schema'] = [(col, str(dtype)) for col, dtype in df.dtypes.items()]
             result['column_count'] = len(df.columns)
 
@@ -296,6 +359,10 @@ class FileDetector:
                 result['row_count'] = len(df)
 
             result['nullable_columns'] = [col for col in df.columns if df[col].isnull().any()]
+
+            # Store sample rows (first 3) for SQL comment generation
+            sample_rows = df.head(3).where(pd.notnull(df.head(3)), None).values.tolist()
+            result['sample_rows'] = [[_json_safe(v) for v in row] for row in sample_rows]
         except Exception as e:
             logger.warning("Failed to analyze CSV %s: %s", file_path, e)
             result['error'] = str(e)
@@ -305,6 +372,7 @@ class FileDetector:
 
     def _analyze_parquet(self, file_path: str) -> Dict[str, Any]:
         """Analyse Parquet file metadata."""
+        _ensure_pyarrow()
         try:
             pf = pq.ParquetFile(file_path)
             arrow_schema = pf.schema_arrow
@@ -344,6 +412,7 @@ class FileDetector:
                 },
             }
         except Exception as e:
+            _ensure_pandas()
             try:
                 df = pd.read_parquet(file_path)
                 return {
@@ -377,11 +446,16 @@ class FileDetector:
 
             row_count = None
             try:
-                # Use pyarrow table slice to avoid loading entire dataset
-                arrow_table = dt.to_pyarrow_table()
-                row_count = arrow_table.num_rows
+                # Use pyarrow dataset to count rows without loading data
+                ds = dt.to_pyarrow_dataset()
+                row_count = ds.count_rows()
             except Exception:
-                pass
+                try:
+                    # Fallback: read just one column to get num_rows
+                    tbl = dt.to_pyarrow_table(columns=[schema.fields[0].name] if schema.fields else [])
+                    row_count = tbl.num_rows
+                except Exception:
+                    pass
 
             return {
                 'schema': fields,
@@ -399,6 +473,110 @@ class FileDetector:
             result['warning'] = 'Delta table support requires: pip install deltalake'
             return result
         except Exception as e:
+            # Fall back to reading underlying parquet files directly
+            try:
+                import glob
+                parquet_files = glob.glob(
+                    os.path.join(file_path, '**/*.parquet'), recursive=True
+                )
+                if parquet_files:
+                    result = self._analyze_parquet(parquet_files[0])
+                    result['warning'] = (
+                        f'Delta log parsing failed ({type(e).__name__}). '
+                        f'Metadata derived from underlying parquet files.'
+                    )
+                    return result
+            except Exception:
+                pass
+            return {'error': str(e), 'encoding': 'binary'}
+
+    def _analyze_iceberg(self, file_path: str) -> Dict[str, Any]:
+        """Analyse an Apache Iceberg table folder by reading its metadata JSON."""
+        import glob as _glob
+
+        # Iceberg type mapping to our internal type names
+        iceberg_type_map = {
+            'boolean': 'bool', 'int': 'int32', 'long': 'int64',
+            'float': 'float32', 'double': 'float64', 'string': 'str',
+            'date': 'date', 'time': 'time', 'timestamp': 'timestamp',
+            'timestamptz': 'timestamp', 'timestamp_ntz': 'timestamp',
+            'binary': 'binary', 'uuid': 'str', 'fixed': 'binary',
+            'decimal': 'decimal128',
+        }
+
+        try:
+            # Find the latest metadata file
+            meta_dir = os.path.join(file_path, 'metadata')
+            meta_files = sorted(_glob.glob(os.path.join(meta_dir, 'v*.metadata.json')))
+            if not meta_files:
+                return {'error': 'No Iceberg metadata file found', 'encoding': 'binary'}
+
+            with open(meta_files[-1], 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+            # Parse schema from Iceberg metadata
+            ice_schema = meta.get('schema') or (meta.get('schemas') or [{}])[-1]
+            fields_raw = ice_schema.get('fields', [])
+
+            schema = []
+            nullable_cols = []
+            for field in fields_raw:
+                name = field.get('name', '')
+                raw_type = field.get('type', 'string')
+                if isinstance(raw_type, dict):
+                    raw_type = raw_type.get('type', 'string')
+                internal_type = iceberg_type_map.get(raw_type.lower(), 'str')
+                schema.append((name, internal_type))
+                if not field.get('required', False):
+                    nullable_cols.append(name)
+
+            iceberg_meta = {
+                'format_version': meta.get('format-version'),
+                'table_uuid': meta.get('table-uuid'),
+                'location': meta.get('location'),
+                'last_updated': meta.get('last-updated-ms'),
+                'partition_spec': meta.get('partition-spec', {}).get('fields', []),
+            }
+
+            # Try counting rows from the underlying parquet files
+            row_count = None
+            parquet_files = _glob.glob(
+                os.path.join(file_path, 'data', '*.parquet')
+            )
+            if parquet_files:
+                try:
+                    _ensure_pyarrow()
+                    total = 0
+                    for pf_path in parquet_files:
+                        pf = pq.ParquetFile(pf_path)
+                        total += pf.metadata.num_rows
+                    row_count = total
+                except Exception:
+                    pass
+
+            return {
+                'schema': schema,
+                'column_count': len(schema),
+                'row_count': row_count,
+                'nullable_columns': nullable_cols,
+                'iceberg_metadata': iceberg_meta,
+                'encoding': 'binary',
+            }
+        except Exception as e:
+            # Fallback: try reading parquet files directly
+            try:
+                parquet_files = _glob.glob(
+                    os.path.join(file_path, 'data', '*.parquet')
+                )
+                if parquet_files:
+                    result = self._analyze_parquet(parquet_files[0])
+                    result['warning'] = (
+                        f'Iceberg metadata parsing failed ({type(e).__name__}). '
+                        f'Metadata derived from underlying parquet files.'
+                    )
+                    return result
+            except Exception:
+                pass
             return {'error': str(e), 'encoding': 'binary'}
 
     def _analyze_json(self, file_path: str, encoding: str = 'utf-8') -> Dict[str, Any]:
@@ -451,20 +629,34 @@ class FileDetector:
 
         Walks one level deep to classify each field as scalar / object / array
         and records sample values for SQL generation.
+
+        Scans ALL rows to discover the full set of keys (NDJSON files may
+        have different fields per line).
         """
-        first = rows[0]
+        # Collect all unique keys in order of first appearance across all rows
+        all_keys: Dict[str, None] = {}
+        for row in rows:
+            for key in row:
+                if key not in all_keys:
+                    all_keys[key] = None
+
         schema: List[tuple] = []
         nesting: Dict[str, str] = {}
         sample_values: Dict[str, Any] = {}
+        nullable_columns: List[str] = []
 
-        for key, val in first.items():
-            # Determine nesting kind by scanning first non-null value across rows
-            effective_val = val
-            if effective_val is None:
-                for r in rows[1:]:
-                    if r.get(key) is not None:
-                        effective_val = r[key]
-                        break
+        for key in all_keys:
+            # Find first non-null value for this key across all rows
+            effective_val = None
+            missing_count = 0
+            for r in rows:
+                if key not in r or r[key] is None:
+                    missing_count += 1
+                elif effective_val is None:
+                    effective_val = r[key]
+
+            if missing_count > 0:
+                nullable_columns.append(key)
 
             if isinstance(effective_val, dict):
                 nesting[key] = 'object'
@@ -486,6 +678,7 @@ class FileDetector:
             'json_format': json_format,
             'json_nesting': nesting,
             'json_sample_values': {k: _json_safe(v) for k, v in sample_values.items()},
+            'nullable_columns': nullable_columns,
         }
 
 
@@ -500,6 +693,7 @@ class FileDetector:
 
     def _analyze_excel(self, file_path: str) -> Dict[str, Any]:
         """Analyse Excel (.xlsx / .xls) file metadata."""
+        _ensure_pandas()
         try:
             try:
                 import openpyxl  # noqa: F401
@@ -529,6 +723,7 @@ class FileDetector:
                 'row_count': len(df),
                 'column_count': len(schema),
                 'has_header': True,
+                'sample_rows': [[_json_safe(v) for v in row] for row in df.head(3).where(pd.notnull(df.head(3)), None).values.tolist()],
             }
         except Exception as e:
             return {'error': str(e)}
@@ -539,6 +734,10 @@ class FileDetector:
 
     def get_preview_data(self, file_path: str, max_rows: int = 100) -> Dict[str, Any]:
         """Return a tabular preview of the file as columns + rows."""
+        # Cap max_rows to prevent memory exhaustion
+        max_rows = min(max_rows, 10000)
+        _ensure_pandas()
+        _ensure_pyarrow()
         file_type = self.detect_file_type(file_path)
         meta = self.analyze_file_metadata(file_path)
         encoding = meta.get('encoding', 'utf-8') or 'utf-8'
@@ -553,17 +752,38 @@ class FileDetector:
 
             elif file_type == 'parquet':
                 pf = pq.ParquetFile(file_path)
-                df = pf.read().to_pandas().head(max_rows)
+                # Read only the first row group instead of entire file
+                if pf.metadata.num_row_groups > 0:
+                    table = pf.read_row_group(0)
+                    df = table.slice(0, max_rows).to_pandas()
+                else:
+                    df = pf.read().slice(0, max_rows).to_pandas()
 
             elif file_type == 'delta':
                 try:
                     from deltalake import DeltaTable  # type: ignore
                     dt = DeltaTable(file_path)
-                    arrow_table = dt.to_pyarrow_table()
-                    df = arrow_table.slice(0, max_rows).to_pandas()
+                    # Use dataset scanner to avoid loading full table
+                    ds = dt.to_pyarrow_dataset()
+                    df = ds.scanner().head(max_rows).to_pandas()
                 except ImportError:
                     pf = pq.ParquetFile(file_path)
-                    df = pf.read().to_pandas().head(max_rows)
+                    if pf.metadata.num_row_groups > 0:
+                        df = pf.read_row_group(0).slice(0, max_rows).to_pandas()
+                    else:
+                        df = pf.read().slice(0, max_rows).to_pandas()
+
+            elif file_type == 'iceberg':
+                import glob as _glob
+                pq_files = sorted(_glob.glob(os.path.join(file_path, 'data', '*.parquet')))
+                if pq_files:
+                    pf = pq.ParquetFile(pq_files[0])
+                    if pf.metadata.num_row_groups > 0:
+                        df = pf.read_row_group(0).slice(0, max_rows).to_pandas()
+                    else:
+                        df = pf.read().slice(0, max_rows).to_pandas()
+                else:
+                    df = pd.DataFrame()
 
             elif file_type == 'json':
                 # Try NDJSON first (line-delimited JSON: each line is a JSON object)
@@ -612,10 +832,18 @@ class FileDetector:
 
             columns = [{'name': col, 'type': str(dtype)} for col, dtype in df.dtypes.items()]
             rows = df.where(pd.notnull(df), None).values.tolist()
-            safe_rows = [
-                [str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v for v in row]
-                for row in rows
-            ]
+
+            def _safe_val(v):
+                """Ensure value is JSON-serialisable (NaN/Inf → None)."""
+                if v is None:
+                    return None
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    return None
+                if not isinstance(v, (str, int, float, bool)):
+                    return str(v)
+                return v
+
+            safe_rows = [[_safe_val(v) for v in row] for row in rows]
 
             return {
                 'columns': columns,
@@ -646,16 +874,23 @@ class FileDetector:
             # Recognize Delta table folders once at the directory level and avoid
             # descending into their internals as separate file entries.
             delta_dirs = []
+            iceberg_dirs = []
             remaining_dirs = []
             for dirname in dirs:
                 candidate = os.path.join(root, dirname)
                 if self.is_delta_table_directory(candidate):
                     delta_dirs.append(candidate)
+                elif self.is_iceberg_table_directory(candidate):
+                    iceberg_dirs.append(candidate)
                 else:
                     remaining_dirs.append(dirname)
 
             for delta_dir in delta_dirs:
                 metadata = self.analyze_file_metadata(delta_dir)
+                results.append(metadata)
+
+            for iceberg_dir in iceberg_dirs:
+                metadata = self.analyze_file_metadata(iceberg_dir)
                 results.append(metadata)
 
             dirs[:] = remaining_dirs
