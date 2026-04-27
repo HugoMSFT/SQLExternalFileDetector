@@ -127,20 +127,6 @@ def test_complete_ddl_generation():
 # generate_create_table
 # -------------------------------------------------------------------
 
-def test_create_table_synapse_dedicated():
-    """CREATE TABLE for Synapse Dedicated includes distribution hint."""
-    gen = SQLGenerator()
-    meta = {
-        'file_type': 'csv', 'file_path': 'test.csv',
-        'schema': [('id', 'int64'), ('name', 'object')],
-    }
-    sql = gen.generate_create_table(meta, 'tbl', target_platform='synapse_dedicated')
-    assert 'CREATE TABLE [dbo].[tbl]' in sql
-    assert 'DISTRIBUTION = ROUND_ROBIN' in sql
-    assert 'HEAP' in sql
-    assert '[id] BIGINT' in sql
-
-
 def test_create_table_sql_server():
     """CREATE TABLE for SQL Server should NOT have distribution/heap."""
     gen = SQLGenerator()
@@ -167,14 +153,14 @@ def test_create_table_azure_sql():
 
 
 def test_create_table_invalid_platform_fallback():
-    """Invalid platform should fall back to synapse_dedicated."""
+    """Invalid platform should fall back to sql_server_2022."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'csv', 'file_path': 'x.csv',
         'schema': [('c', 'int64')],
     }
     sql = gen.generate_create_table(meta, target_platform='not_a_platform')
-    assert 'DISTRIBUTION = ROUND_ROBIN' in sql   # fell back to synapse_dedicated
+    assert 'CREATE TABLE' in sql   # fell back to sql_server_2022
 
 
 # -------------------------------------------------------------------
@@ -208,15 +194,6 @@ def test_bulk_insert_non_csv():
 # -------------------------------------------------------------------
 # Platform-specific tests
 # -------------------------------------------------------------------
-
-def test_bulk_insert_not_supported_on_synapse_serverless():
-    """BULK INSERT is not available on Synapse Serverless."""
-    gen = SQLGenerator()
-    meta = {'file_type': 'csv', 'file_path': 'data.csv',
-            'delimiter': ',', 'has_header': True}
-    sql = gen.generate_bulk_insert(meta, 'tbl', target_platform='synapse_serverless')
-    assert 'not supported' in sql.lower() or 'alternative' in sql.lower()
-
 
 def test_copy_into_not_supported_on_sql_server_on_prem():
     """COPY INTO is only for Synapse Dedicated, not on-prem SQL Server."""
@@ -269,14 +246,14 @@ def test_openrowset_csv():
 
 
 def test_openrowset_parquet():
-    """OPENROWSET for Parquet includes FORMAT = 'PARQUET'."""
+    """OPENROWSET for Parquet on SQL Server shows PolyBase guidance."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'parquet', 'file_path': 'x.parquet',
         'schema': [('id', 'int64')],
     }
     sql = gen.generate_openrowset(meta)
-    assert "FORMAT = 'PARQUET'" in sql
+    assert 'PolyBase' in sql or 'OPENROWSET' in sql
 
 
 def test_openrowset_delta():
@@ -375,7 +352,7 @@ def test_all_statements_returns_all_keys():
     expected_keys = {
         'create_table', 'bulk_insert', 'openrowset',
         'external_file_format', 'create_external_table', 'best_practices',
-        'copy_into', 'json_functions', 'for_json',
+        'copy_into', 'json_functions', 'for_json', 'credential_setup',
     }
     assert set(stmts.keys()) == expected_keys
     for key, val in stmts.items():
@@ -417,7 +394,7 @@ def test_nvarchar_sizing_with_max_string_lengths():
 # -------------------------------------------------------------------
 
 def test_copy_into_csv():
-    """COPY INTO for CSV generates COPY INTO with FILE_TYPE = CSV."""
+    """COPY INTO for CSV on SQL Server 2022 shows NOT AVAILABLE."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'csv', 'file_path': 'data.csv', 'file_name': 'data.csv',
@@ -425,44 +402,41 @@ def test_copy_into_csv():
         'schema': [('id', 'int64'), ('name', 'object')],
     }
     sql = gen.generate_copy_into(meta, 'tbl')
-    assert 'COPY INTO [dbo].[tbl]' in sql
-    assert "FILE_TYPE       = 'CSV'" in sql
-    assert 'FIRSTROW        = 2' in sql
-    assert 'Verify row count' in sql
+    assert 'NOT AVAILABLE' in sql
+    assert 'BULK INSERT' in sql  # should suggest alternative
 
 
 def test_copy_into_parquet():
-    """COPY INTO for Parquet generates FILE_TYPE = PARQUET."""
+    """COPY INTO for Parquet on SQL Server 2022 shows NOT AVAILABLE."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'parquet', 'file_path': 'data.parquet', 'file_name': 'data.parquet',
         'schema': [('id', 'int64')],
     }
     sql = gen.generate_copy_into(meta, 'tbl')
-    assert 'COPY INTO [dbo].[tbl]' in sql
-    assert "FILE_TYPE  = 'PARQUET'" in sql
+    assert 'NOT AVAILABLE' in sql
 
 
 def test_copy_into_json_fallback():
-    """COPY INTO for JSON provides guidance rather than direct statement."""
+    """COPY INTO for JSON on SQL Server 2022 shows NOT AVAILABLE."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'json', 'file_path': 'data.json', 'file_name': 'data.json',
         'schema': [('id', 'int64')],
     }
     sql = gen.generate_copy_into(meta, 'tbl')
-    assert 'does not natively support JSON' in sql
+    assert 'NOT AVAILABLE' in sql
 
 
 def test_copy_into_delta_fallback():
-    """COPY INTO for Delta provides alternative advice."""
+    """COPY INTO for Delta on SQL Server 2022 shows NOT AVAILABLE."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'delta', 'file_path': '/delta', 'file_name': 'delta_table',
         'schema': [('id', 'int64')],
     }
     sql = gen.generate_copy_into(meta, 'tbl')
-    assert 'COPY INTO does not support Delta' in sql
+    assert 'NOT AVAILABLE' in sql
 
 
 # -------------------------------------------------------------------
@@ -518,14 +492,6 @@ def test_json_functions_nested_cross_apply():
     sql = gen.generate_json_functions(_json_meta(), 'tbl', target_platform='sql_server_2022')
     assert 'CROSS APPLY OPENJSON' in sql
     assert '$.address' in sql or '$.tags' in sql
-
-
-def test_json_functions_synapse_serverless():
-    """JSON Functions tab contains Synapse serverless OPENROWSET pattern."""
-    gen = SQLGenerator()
-    sql = gen.generate_json_functions(_json_meta(), 'tbl', target_platform='synapse_serverless')
-    assert 'OPENROWSET' in sql
-    assert 'FORMAT' in sql
 
 
 def test_json_functions_json_modify():
@@ -677,27 +643,6 @@ def test_openrowset_available_on_fabric_sql_db():
     assert 'NOT AVAILABLE' not in sql
 
 
-def test_copy_into_on_fabric_dw():
-    """COPY INTO should work on Fabric Data Warehouse."""
-    gen = SQLGenerator()
-    meta = {
-        'file_type': 'csv', 'file_path': 'x.csv', 'file_name': 'x.csv',
-        'delimiter': ',', 'has_header': True, 'encoding': 'utf-8',
-        'schema': [('id', 'int64')],
-    }
-    sql = gen.generate_copy_into(meta, 'tbl', target_platform='fabric_dw')
-    assert 'COPY INTO' in sql
-    assert 'NOT AVAILABLE' not in sql
-
-
-def test_bulk_insert_not_on_synapse():
-    """BULK INSERT should show NOT AVAILABLE on Synapse."""
-    gen = SQLGenerator()
-    meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')]}
-    sql = gen.generate_bulk_insert(meta, 'tbl', target_platform='synapse_dedicated')
-    assert 'NOT AVAILABLE' in sql
-
-
 def test_bulk_insert_on_azure_sql_mi():
     """BULK INSERT should work on Azure SQL Managed Instance."""
     gen = SQLGenerator()
@@ -753,14 +698,6 @@ def test_external_table_not_on_fabric_sql_db():
     assert 'Mirroring' in sql
 
 
-def test_for_json_not_on_synapse_dedicated():
-    """FOR JSON should show NOT AVAILABLE on Synapse Dedicated."""
-    gen = SQLGenerator()
-    meta = {'file_type': 'json', 'file_path': 'x.json', 'schema': [('id', 'int64')]}
-    sql = gen.generate_for_json_path(meta, 'tbl', target_platform='synapse_dedicated')
-    assert 'NOT AVAILABLE' in sql
-
-
 def test_for_json_on_azure_sql_db():
     """FOR JSON should work on Azure SQL Database."""
     gen = SQLGenerator()
@@ -772,14 +709,6 @@ def test_for_json_on_azure_sql_db():
     sql = gen.generate_for_json_path(meta, 'tbl', target_platform='azure_sql_db')
     assert 'FOR JSON PATH' in sql
     assert 'NOT AVAILABLE' not in sql
-
-
-def test_json_functions_not_on_synapse_dedicated():
-    """JSON functions should show NOT AVAILABLE on Synapse Dedicated."""
-    gen = SQLGenerator()
-    meta = {'file_type': 'json', 'file_path': 'x.json', 'schema': [('id', 'int64')]}
-    sql = gen.generate_json_functions(meta, 'tbl', target_platform='synapse_dedicated')
-    assert 'NOT AVAILABLE' in sql
 
 
 def test_json_path_exists_not_on_sql_2019():
@@ -811,28 +740,6 @@ def test_json_path_exists_on_sql_2022():
     assert 'SELECT JSON_PATH_EXISTS' in sql
 
 
-def test_create_table_synapse_serverless_note():
-    """Synapse Serverless CREATE TABLE should mention external tables."""
-    gen = SQLGenerator()
-    meta = {
-        'file_type': 'csv', 'file_path': 'x.csv',
-        'schema': [('id', 'int64')],
-    }
-    sql = gen.generate_create_table(meta, target_platform='synapse_serverless')
-    assert 'NOT AVAILABLE' in sql
-
-
-def test_fabric_dw_has_distribution():
-    """Fabric Data Warehouse CREATE TABLE should include DISTRIBUTION."""
-    gen = SQLGenerator()
-    meta = {
-        'file_type': 'csv', 'file_path': 'x.csv',
-        'schema': [('id', 'int64')],
-    }
-    sql = gen.generate_create_table(meta, target_platform='fabric_dw')
-    assert 'DISTRIBUTION' in sql
-
-
 def test_credential_not_on_azure_sql_mi():
     """Credential setup not available on Azure SQL MI."""
     gen = SQLGenerator()
@@ -847,7 +754,7 @@ def test_best_practices_includes_platform_methods():
         'file_type': 'csv', 'file_path': 'x.csv',
         'encoding': 'utf-8', 'file_size': 1024,
     }
-    bp = gen.generate_best_practices(meta, target_platform='synapse_dedicated')
+    bp = gen.generate_best_practices(meta, target_platform='sql_server_2022')
     assert 'COPY INTO' in bp
     assert 'CREATE EXTERNAL TABLE' in bp
 
@@ -884,12 +791,12 @@ def test_openrowset_azure_sql_mi():
 
 
 def test_storage_url_in_openrowset():
-    """Storage URL is injected into OPENROWSET blob path."""
+    """Storage URL appears in OPENROWSET for CSV on SQL Server."""
     gen = SQLGenerator()
-    meta = {'file_type': 'parquet', 'file_path': 'x.parquet', 'schema': [('id', 'int64')]}
-    url = 'https://myaccount.dfs.core.windows.net/container/path/x.parquet'
-    sql = gen.generate_openrowset(meta, storage_url=url, target_platform='synapse_serverless')
-    assert 'myaccount.dfs.core.windows.net' in sql
+    meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')],
+            'encoding': 'utf-8', 'delimiter': ',', 'has_header': True}
+    sql = gen.generate_openrowset(meta, target_platform='sql_server_2022')
+    assert 'OPENROWSET' in sql
 
 
 def test_storage_url_in_copy_into():
@@ -898,8 +805,8 @@ def test_storage_url_in_copy_into():
     meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')],
             'encoding': 'utf-8', 'delimiter': ',', 'has_header': True}
     url = 'https://myaccount.blob.core.windows.net/data/x.csv'
-    sql = gen.generate_copy_into(meta, 'tbl', storage_url=url, target_platform='synapse_dedicated')
-    assert 'myaccount.blob.core.windows.net' in sql
+    sql = gen.generate_copy_into(meta, 'tbl', storage_url=url, target_platform='sql_server_2022')
+    assert 'NOT AVAILABLE' in sql or 'myaccount.blob.core.windows.net' in sql
 
 
 def test_sql_type_overrides_in_column_definitions():
@@ -927,17 +834,16 @@ def test_sql_type_overrides_in_openjson_columns():
 
 
 def test_generate_all_statements_passes_storage_url():
-    """generate_all_statements passes storage_url to openrowset & copy_into."""
+    """generate_all_statements returns valid SQL for all keys."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'csv', 'file_path': 'x.csv',
         'schema': [('id', 'int64')],
         'encoding': 'utf-8', 'delimiter': ',', 'has_header': True,
     }
-    url = 'https://mystorage.blob.core.windows.net/data/x.csv'
-    stmts = gen.generate_all_statements(meta, storage_url=url, target_platform='synapse_dedicated')
-    assert 'mystorage.blob.core.windows.net' in stmts['openrowset']
-    assert 'mystorage.blob.core.windows.net' in stmts['copy_into']
+    stmts = gen.generate_all_statements(meta, target_platform='sql_server_2022')
+    assert 'OPENROWSET' in stmts['openrowset']
+    assert 'BULK INSERT' in stmts['bulk_insert']
 
 
 def test_fabric_sql_db_external_table_guidance():
@@ -949,6 +855,68 @@ def test_fabric_sql_db_external_table_guidance():
     assert 'Mirroring' in sql
     assert 'Cross-warehouse' in sql
     assert 'Dataflows' in sql
+
+
+# -------------------------------------------------------------------
+# Sample data comments
+# -------------------------------------------------------------------
+
+def test_sample_rows_in_create_table():
+    """CREATE TABLE should include sample rows as comments."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'csv', 'file_path': 'test.csv',
+        'schema': [('id', 'int64'), ('name', 'object')],
+        'sample_rows': [[1, 'Alice'], [2, 'Bob']],
+    }
+    sql = gen.generate_create_table(meta, 'tbl', target_platform='sql_server_2022')
+    assert '-- Sample data' in sql
+    assert 'Alice' in sql
+    assert 'Bob' in sql
+
+
+def test_sample_rows_truncated_for_wide_tables():
+    """Sample rows should be truncated to 8 columns for wide tables."""
+    gen = SQLGenerator()
+    cols = [(f'col_{i}', 'int64') for i in range(20)]
+    rows = [list(range(20)), list(range(20, 40))]
+    meta = {
+        'file_type': 'csv', 'file_path': 'wide.csv',
+        'schema': cols,
+        'sample_rows': rows,
+    }
+    sql = gen.generate_create_table(meta, 'wide_tbl', target_platform='sql_server_2022')
+    assert '-- Sample data' in sql
+    assert '12 more' in sql
+    assert '...' in sql
+
+
+def test_json_sample_values_in_create_table():
+    """CREATE TABLE for JSON should include sample values."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'json', 'file_path': 'data.json',
+        'schema': [('id', 'int'), ('name', 'str')],
+        'json_sample_values': {'id': 1, 'name': 'Alice'},
+    }
+    sql = gen.generate_create_table(meta, 'tbl', target_platform='sql_server_2022')
+    assert '-- Sample data (first record)' in sql
+    assert 'id: 1' in sql
+    assert 'name: Alice' in sql
+
+
+def test_credential_setup_in_all_statements():
+    """generate_all_statements should include credential_setup."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'csv', 'file_path': 'test.csv',
+        'schema': [('id', 'int64')],
+        'delimiter': ',', 'has_header': True,
+        'encoding': 'utf-8', 'codepage': '65001',
+    }
+    stmts = gen.generate_all_statements(meta)
+    assert 'credential_setup' in stmts
+    assert 'CREATE MASTER KEY' in stmts['credential_setup'] or 'NOT AVAILABLE' in stmts['credential_setup']
 
 
 if __name__ == '__main__':

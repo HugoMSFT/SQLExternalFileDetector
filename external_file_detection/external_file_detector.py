@@ -2,9 +2,10 @@
 
 import os
 import logging
+import shutil
 import tempfile
+import uuid
 from typing import Dict, List, Any, Optional
-from pathlib import Path
 
 from .file_detector import FileDetector
 from .sql_generator import SQLGenerator
@@ -26,7 +27,6 @@ class ExternalFileDetectorApp:
         self.file_detector = FileDetector()
         self.sql_generator = SQLGenerator()
         self.storage_config = storage_config or {}
-        self.temp_dir = None
     
     def analyze_location(self, location: str, data_source: str = None) -> Dict[str, Any]:
         """
@@ -55,8 +55,7 @@ class ExternalFileDetectorApp:
         
         # Create temporary directory for downloads if needed
         is_remote = location.startswith(('s3://', 'azure://', 'https://'))
-        if is_remote:
-            self.temp_dir = tempfile.mkdtemp()
+        temp_dir = tempfile.mkdtemp() if is_remote else None
         
         results = {
             'location': location,
@@ -72,7 +71,7 @@ class ExternalFileDetectorApp:
         try:
             for file_path in files:
                 file_result = self._analyze_single_file(
-                    file_path, storage_handler, data_source
+                    file_path, storage_handler, data_source, temp_dir
                 )
                 results['files'].append(file_result)
                 
@@ -87,22 +86,22 @@ class ExternalFileDetectorApp:
                     
         finally:
             # Clean up temporary directory
-            if self.temp_dir and os.path.exists(self.temp_dir):
-                import shutil
-                shutil.rmtree(self.temp_dir)
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
         
         return results
     
     def _analyze_single_file(self, file_path: str, storage_handler: StorageHandler,
-                           data_source: str = None) -> Dict[str, Any]:
+                           data_source: str = None, temp_dir: str = None) -> Dict[str, Any]:
         """Analyze a single file and generate SQL DDL."""
         local_path = file_path
         
         # Download file if it's remote
         is_remote = file_path.startswith(('s3://', 'azure://', 'https://'))
         if is_remote:
-            filename = os.path.basename(file_path)
-            local_path = os.path.join(self.temp_dir, filename)
+            # Use uuid prefix to avoid filename collisions from different directories
+            filename = f"{uuid.uuid4().hex[:8]}_{os.path.basename(file_path)}"
+            local_path = os.path.join(temp_dir, filename)
             try:
                 local_path = storage_handler.download_file(file_path, local_path)
             except Exception as e:
@@ -176,10 +175,14 @@ class ExternalFileDetectorApp:
             List of analysis results
         """
         results = []
+        handler_cache: Dict[str, StorageHandler] = {}
         
         for file_path in file_paths:
-            storage_handler = StorageFactory.create_handler(file_path, **self.storage_config)
-            result = self._analyze_single_file(file_path, storage_handler, data_source)
+            # Reuse storage handler for same-prefix paths
+            prefix = file_path.split('://')[0] if '://' in file_path else 'local'
+            if prefix not in handler_cache:
+                handler_cache[prefix] = StorageFactory.create_handler(file_path, **self.storage_config)
+            result = self._analyze_single_file(file_path, handler_cache[prefix], data_source)
             results.append(result)
         
         return results
@@ -198,24 +201,29 @@ class ExternalFileDetectorApp:
         Returns:
             SQL CREATE EXTERNAL DATA SOURCE statement
         """
-        sql_parts = [f"CREATE EXTERNAL DATA SOURCE [{data_source_name}]"]
+        # Sanitize inputs to prevent SQL injection
+        safe_ds_name = self._sanitize_sql_identifier(data_source_name)
+        safe_location = location.replace("'", "''")
+        
+        sql_parts = [f"CREATE EXTERNAL DATA SOURCE [{safe_ds_name}]"]
         sql_parts.append("WITH (")
         
         options = []
         
         if storage_type.lower() == 's3':
             options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{location}'")
+            options.append(f"    LOCATION = '{safe_location}'")
         elif storage_type.lower() == 'azure':
             options.append(f"    TYPE = BLOB_STORAGE")
-            options.append(f"    LOCATION = '{location}'")
+            options.append(f"    LOCATION = '{safe_location}'")
         else:
             # Generic/local
             options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{location}'")
+            options.append(f"    LOCATION = '{safe_location}'")
         
         if credential:
-            options.append(f"    CREDENTIAL = [{credential}]")
+            safe_credential = self._sanitize_sql_identifier(credential)
+            options.append(f"    CREDENTIAL = [{safe_credential}]")
         
         sql_parts.append(",\n".join(options))
         sql_parts.append(");")
@@ -243,17 +251,29 @@ class ExternalFileDetectorApp:
         else:  # SQL format
             with open(output_file, 'w') as f:
                 f.write("-- External File Detection Results\n")
-                f.write(f"-- Location: {results['location']}\n")
+                f.write(f"-- Location: {self._sanitize_sql_comment(results['location'])}\n")
                 f.write(f"-- Files found: {results['files_found']}\n\n")
                 
                 for file_result in results['files']:
-                    f.write(f"-- File: {file_result['file_path']}\n")
-                    f.write(f"-- Type: {file_result['metadata']['file_type']}\n")
+                    f.write(f"-- File: {self._sanitize_sql_comment(file_result['file_path'])}\n")
+                    f.write(f"-- Type: {self._sanitize_sql_comment(file_result['metadata']['file_type'])}\n")
                     if 'error' in file_result:
-                        f.write(f"-- Error: {file_result['error']}\n\n")
+                        f.write(f"-- Error: {self._sanitize_sql_comment(file_result['error'])}\n\n")
                     else:
                         f.write(file_result['sql_ddl'])
                         f.write("\n\n")
+    
+    @staticmethod
+    def _sanitize_sql_identifier(name: str) -> str:
+        """Sanitize a value for use as a SQL bracket-delimited identifier."""
+        # Remove characters that could break bracket-delimited identifiers
+        return name.replace(']', ']]')
+    
+    @staticmethod
+    def _sanitize_sql_comment(value: str) -> str:
+        """Sanitize a value for safe inclusion in a SQL comment."""
+        # Replace newlines to prevent breaking out of comments
+        return str(value).replace('\n', ' ').replace('\r', '')
     
     def get_supported_file_types(self) -> List[str]:
         """Get list of supported file types."""

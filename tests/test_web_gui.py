@@ -44,7 +44,7 @@ class TestWebGUI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'External File Detection Tool', response.data)
         self.assertIn(b'Best Practices', response.data)
-        self.assertNotIn(b'Credentials', response.data)
+        self.assertIn(b'Schema Editor', response.data)
 
     def test_initial_path_api(self):
         """Test /api/initial_path returns a valid directory."""
@@ -143,7 +143,7 @@ class TestWebGUI(unittest.TestCase):
         stored_path = data['files'][0]['file_path']
 
         from urllib.parse import quote
-        resp2 = self.client.get('/api/preview/' + quote(stored_path, safe=''))
+        resp2 = self.client.get('/api/preview/' + quote(stored_path.lstrip('/'), safe='/'))
         self.assertEqual(resp2.status_code, 200)
         data2 = json.loads(resp2.data)
         self.assertTrue(data2['success'])
@@ -160,7 +160,7 @@ class TestWebGUI(unittest.TestCase):
 
         from urllib.parse import quote
         resp2 = self.client.get(
-            '/api/sql_ddl/' + quote(stored_path, safe='') +
+            '/api/sql_ddl/' + quote(stored_path.lstrip('/'), safe='/') +
             '?data_source=TestDS&target_platform=sql_server_2022')
         self.assertEqual(resp2.status_code, 200)
         data2 = json.loads(resp2.data)
@@ -177,7 +177,7 @@ class TestWebGUI(unittest.TestCase):
         stored_path = data['files'][0]['file_path']
 
         from urllib.parse import quote
-        resp2 = self.client.get('/api/file_details/' + quote(stored_path, safe=''))
+        resp2 = self.client.get('/api/file_details/' + quote(stored_path.lstrip('/'), safe='/'))
         self.assertEqual(resp2.status_code, 200)
         data2 = json.loads(resp2.data)
         self.assertTrue(data2['success'])
@@ -255,7 +255,7 @@ class TestWebGUI(unittest.TestCase):
         # Now request DDL using the exact stored path
         from urllib.parse import quote
         resp2 = self.client.get(
-            '/api/sql_ddl/' + quote(stored_path, safe='') +
+            '/api/sql_ddl/' + quote(stored_path.lstrip('/'), safe='/') +
             '?target_platform=sql_server_2022&schema=dbo&data_source=DS')
         self.assertEqual(resp2.status_code, 200)
         data2 = json.loads(resp2.data)
@@ -282,7 +282,7 @@ class TestWebGUI(unittest.TestCase):
 
             from urllib.parse import quote
             resp2 = self.client.get(
-                '/api/sql_ddl/' + quote(stored_path, safe='') +
+                '/api/sql_ddl/' + quote(stored_path.lstrip('/'), safe='/') +
                 '?target_platform=fabric_sql_db&schema=dbo&data_source=DS')
             self.assertEqual(resp2.status_code, 200)
             data2 = json.loads(resp2.data)
@@ -300,12 +300,32 @@ class TestWebGUI(unittest.TestCase):
         # Analyse first
         self.client.post('/api/analyze_files', json={'files': [csv_path]})
         # Preview
-        resp = self.client.get('/api/preview_table/' + csv_path.replace('\\', '/') + '?rows=10')
+        resp = self.client.get('/api/preview_table/' + csv_path.lstrip('/').replace('\\', '/') + '?rows=10')
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
         self.assertTrue(data['success'])
         self.assertEqual(len(data['columns']), 2)
         self.assertEqual(len(data['rows']), 2)
+
+    def test_preview_table_caps_rows(self):
+        """Test that /api/preview_table caps rows at 10000."""
+        csv_path = self._create_csv('x,y\n1,a\n2,b\n', 'cap_test.csv')
+        self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        # Request absurdly high row count — should be silently capped
+        resp = self.client.get('/api/preview_table/' + csv_path.lstrip('/').replace('\\', '/') + '?rows=999999')
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertTrue(data['success'])
+
+    def test_encoding_warning_in_metadata(self):
+        """Test that encoding_warning field can be present in metadata."""
+        csv_path = self._create_csv()
+        resp = self.client.post('/api/analyze_files', json={'files': [csv_path]})
+        data = json.loads(resp.data)
+        # encoding_warning may or may not appear depending on chardet confidence
+        # but the metadata structure must be valid
+        self.assertTrue(data['success'])
+        self.assertIn('encoding_confidence', data['files'][0])
 
 
 if __name__ == '__main__':

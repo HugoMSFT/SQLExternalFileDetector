@@ -2,18 +2,54 @@
 
 import click
 import json
-import os
-import sys
 import logging
 from typing import Dict, Any
 
 from .external_file_detector import ExternalFileDetectorApp
+from . import __version__
 
 logger = logging.getLogger(__name__)
 
 
+def _build_storage_config(aws_access_key_id, aws_secret_access_key, aws_region,
+                          azure_account_name, azure_account_key,
+                          azure_connection_string) -> Dict[str, Any]:
+    """Build storage configuration dict from CLI options."""
+    storage_config: Dict[str, Any] = {}
+    if aws_access_key_id:
+        storage_config['aws_access_key_id'] = aws_access_key_id
+    if aws_secret_access_key:
+        storage_config['aws_secret_access_key'] = aws_secret_access_key
+    if aws_region:
+        storage_config['region_name'] = aws_region
+    if azure_account_name:
+        storage_config['azure_account_name'] = azure_account_name
+    if azure_account_key:
+        storage_config['azure_account_key'] = azure_account_key
+    if azure_connection_string:
+        storage_config['azure_connection_string'] = azure_connection_string
+    return storage_config
+
+
+def storage_options(func):
+    """Shared Click options for cloud storage credentials."""
+    func = click.option('--azure-connection-string', default=None, envvar='AZURE_STORAGE_CONNECTION_STRING',
+                        help='Azure storage connection string (or set AZURE_STORAGE_CONNECTION_STRING env var)')(func)
+    func = click.option('--azure-account-key', default=None, envvar='AZURE_STORAGE_KEY',
+                        help='Azure storage account key (or set AZURE_STORAGE_KEY env var)')(func)
+    func = click.option('--azure-account-name', default=None, envvar='AZURE_STORAGE_ACCOUNT',
+                        help='Azure storage account name (or set AZURE_STORAGE_ACCOUNT env var)')(func)
+    func = click.option('--aws-region', default='us-east-1', envvar='AWS_DEFAULT_REGION',
+                        help='AWS region (or set AWS_DEFAULT_REGION env var)')(func)
+    func = click.option('--aws-secret-access-key', default=None, envvar='AWS_SECRET_ACCESS_KEY',
+                        help='AWS secret access key (or set AWS_SECRET_ACCESS_KEY env var)')(func)
+    func = click.option('--aws-access-key-id', default=None, envvar='AWS_ACCESS_KEY_ID',
+                        help='AWS access key ID (or set AWS_ACCESS_KEY_ID env var)')(func)
+    return func
+
+
 @click.group()
-@click.version_option(version="1.0.0")
+@click.version_option(version=__version__)
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 def main(verbose):
     """External File Detector - Detect file types and generate SQL DDL."""
@@ -28,11 +64,12 @@ def main(verbose):
 @click.option('--host', default='127.0.0.1', help='Host to bind to')
 @click.option('--port', default=5000, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def gui(host, port, debug):
+@click.option('--root-dir', default=None, help='Restrict file browsing to this directory tree')
+def gui(host, port, debug, root_dir):
     """Launch the web-based graphical user interface."""
     try:
         from .web_gui import ExternalFileDetectionWebGUI
-        app = ExternalFileDetectionWebGUI()
+        app = ExternalFileDetectionWebGUI(root_dir=root_dir)
         app.run(host=host, port=port, debug=debug)
     except ImportError as e:
         click.echo(f"Error: Could not launch web GUI: {e}")
@@ -49,37 +86,16 @@ def gui(host, port, debug):
               help='Output file path for results')
 @click.option('--format', '-f', default='sql', type=click.Choice(['sql', 'json']),
               help='Output format')
-@click.option('--aws-access-key-id', default=None, envvar='AWS_ACCESS_KEY_ID',
-              help='AWS access key ID (or set AWS_ACCESS_KEY_ID env var)')
-@click.option('--aws-secret-access-key', default=None, envvar='AWS_SECRET_ACCESS_KEY',
-              help='AWS secret access key (or set AWS_SECRET_ACCESS_KEY env var)')
-@click.option('--aws-region', default='us-east-1', envvar='AWS_DEFAULT_REGION',
-              help='AWS region (or set AWS_DEFAULT_REGION env var)')
-@click.option('--azure-account-name', default=None, envvar='AZURE_STORAGE_ACCOUNT',
-              help='Azure storage account name (or set AZURE_STORAGE_ACCOUNT env var)')
-@click.option('--azure-account-key', default=None, envvar='AZURE_STORAGE_KEY',
-              help='Azure storage account key (or set AZURE_STORAGE_KEY env var)')
-@click.option('--azure-connection-string', default=None, envvar='AZURE_STORAGE_CONNECTION_STRING',
-              help='Azure storage connection string (or set AZURE_STORAGE_CONNECTION_STRING env var)')
+@storage_options
 def analyze(location, data_source, output, format, aws_access_key_id, 
            aws_secret_access_key, aws_region, azure_account_name,
            azure_account_key, azure_connection_string):
     """Analyze files at the specified location."""
     
-    # Prepare storage configuration
-    storage_config = {}
-    if aws_access_key_id:
-        storage_config['aws_access_key_id'] = aws_access_key_id
-    if aws_secret_access_key:
-        storage_config['aws_secret_access_key'] = aws_secret_access_key
-    if aws_region:
-        storage_config['region_name'] = aws_region
-    if azure_account_name:
-        storage_config['azure_account_name'] = azure_account_name
-    if azure_account_key:
-        storage_config['azure_account_key'] = azure_account_key
-    if azure_connection_string:
-        storage_config['azure_connection_string'] = azure_connection_string
+    storage_config = _build_storage_config(
+        aws_access_key_id, aws_secret_access_key, aws_region,
+        azure_account_name, azure_account_key, azure_connection_string
+    )
     
     # Initialize application
     app = ExternalFileDetectorApp(storage_config)
@@ -204,32 +220,17 @@ def supported_types():
 
 @main.command()
 @click.argument('location')
-@click.option('--aws-access-key-id', default=None, envvar='AWS_ACCESS_KEY_ID')
-@click.option('--aws-secret-access-key', default=None, envvar='AWS_SECRET_ACCESS_KEY')
-@click.option('--aws-region', default='us-east-1', envvar='AWS_DEFAULT_REGION')
-@click.option('--azure-account-name', default=None, envvar='AZURE_STORAGE_ACCOUNT')
-@click.option('--azure-account-key', default=None, envvar='AZURE_STORAGE_KEY')
-@click.option('--azure-connection-string', default=None, envvar='AZURE_STORAGE_CONNECTION_STRING')
+@storage_options
 def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
                azure_account_name, azure_account_key, azure_connection_string):
     """List files at the specified location."""
     
     from .storage_handlers import StorageFactory
     
-    # Prepare storage configuration
-    storage_config = {}
-    if aws_access_key_id:
-        storage_config['aws_access_key_id'] = aws_access_key_id
-    if aws_secret_access_key:
-        storage_config['aws_secret_access_key'] = aws_secret_access_key
-    if aws_region:
-        storage_config['region_name'] = aws_region
-    if azure_account_name:
-        storage_config['azure_account_name'] = azure_account_name
-    if azure_account_key:
-        storage_config['azure_account_key'] = azure_account_key
-    if azure_connection_string:
-        storage_config['azure_connection_string'] = azure_connection_string
+    storage_config = _build_storage_config(
+        aws_access_key_id, aws_secret_access_key, aws_region,
+        azure_account_name, azure_account_key, azure_connection_string
+    )
     
     try:
         storage_handler = StorageFactory.create_handler(location, **storage_config)

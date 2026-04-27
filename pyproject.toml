@@ -1,3 +1,42 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "external-file-detection"
+version = "1.0.0"
+description = "External File Detector for SQL - detects file types and generates SQL DDL"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "HugoMSFT"}]
+dependencies = [
+    "pandas>=1.5.0",
+    "pyarrow>=10.0.0",
+    "click>=8.1.0",
+    "flask>=2.3.0",
+    "chardet>=4.0.0",
+    "openpyxl>=3.0.0",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.26.0"]
+azure = [
+    "azure-storage-blob>=12.14.0",
+    "azure-identity>=1.12.0",
+]
+delta = ["deltalake>=0.10.0"]
+all = [
+    "boto3>=1.26.0",
+    "azure-storage-blob>=12.14.0",
+    "azure-identity>=1.12.0",
+    "deltalake>=0.10.0",
+]
+
+[project.scripts]
+external-file-detector = "external_file_detection.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["external_file_detection*"]
+
+[tool.setuptools.package-data]
+external_file_detection = ["templates/*.html"]
