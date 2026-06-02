@@ -33,6 +33,33 @@ from .file_detector import FileDetector
 MAX_UPLOAD_SIZE = 200 * 1024 * 1024
 
 
+# Hosts that keep the server bound to the local machine only.
+_LOOPBACK_HOSTS = {'127.0.0.1', 'localhost', '::1'}
+
+
+def _safe_debug(host: str, debug: bool) -> bool:
+    """Return whether Flask debug mode may be enabled for the given host.
+
+    Flask/Werkzeug debug mode exposes an interactive debugger that allows
+    arbitrary code execution. It is only safe on a loopback interface. When
+    the server is bound to a non-loopback host (e.g. 0.0.0.0 or a public IP),
+    refuse to enable debug so the RCE console is never reachable from the
+    network. ``host=None`` uses Flask's default loopback binding and is safe;
+    an empty string binds to all interfaces and is treated as non-loopback.
+    """
+    if not debug:
+        return False
+    if host is None:
+        return True
+    if host.lower() not in _LOOPBACK_HOSTS:
+        logger.warning(
+            "Refusing to enable Flask debug mode while bound to non-loopback "
+            "host %r; the interactive debugger allows remote code execution. "
+            "Run on 127.0.0.1 to use debug mode.", host)
+        return False
+    return True
+
+
 def _validate_path(path: str, root_dir: str = None,
                    allow_files: bool = True, allow_dirs: bool = True) -> str:
     """
@@ -888,6 +915,7 @@ class ExternalFileDetectionWebGUI:
                 "Please ensure templates/index.html is present in the package."
             )
         
+        debug = _safe_debug(host, debug)
         print(f"Starting External File Detection Web GUI...")
         print(f"Open your browser and go to: http://{host}:{port}")
         

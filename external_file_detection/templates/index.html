@@ -1517,18 +1517,18 @@
                 html += '<tr>' +
                     '<td>' + (i + 1) + '</td>' +
                     '<td>' + esc(name) + '</td>' +
-                    '<td><input data-col="' + esc(name) + '" data-field="colName" value="' + esc(ov.colName || name) + '"></td>' +
+                    '<td><input data-col="' + escAttr(name) + '" data-field="colName" value="' + escAttr(ov.colName || name) + '"></td>' +
                     '<td style="color:#64748b">' + esc(dtype) + ' &rarr; ' + esc(detectedSql) + '</td>' +
-                    '<td><select data-col="' + esc(name) + '" data-field="sqlType">';
+                    '<td><select data-col="' + escAttr(name) + '" data-field="sqlType">';
                 // Build options: detected first, then standard list
                 const currentType = ov.sqlType || detectedSql;
                 const allOpts = [detectedSql, ...sqlTypes.filter(t => t !== detectedSql)];
                 allOpts.forEach(t => {
-                    html += '<option value="' + esc(t) + '"' + (t === currentType ? ' selected' : '') + '>' + esc(t) + '</option>';
+                    html += '<option value="' + escAttr(t) + '"' + (t === currentType ? ' selected' : '') + '>' + esc(t) + '</option>';
                 });
                 html += '</select></td>' +
-                    '<td><input type="checkbox" data-col="' + esc(name) + '" data-field="nullable"' + (ov.nullable !== undefined ? (ov.nullable ? ' checked' : '') : (nullableCols.has(name) ? ' checked' : '')) + '></td>' +
-                    '<td><input type="checkbox" data-col="' + esc(name) + '" data-field="excluded"' + (ov.excluded ? ' checked' : '') + '></td>' +
+                    '<td><input type="checkbox" data-col="' + escAttr(name) + '" data-field="nullable"' + (ov.nullable !== undefined ? (ov.nullable ? ' checked' : '') : (nullableCols.has(name) ? ' checked' : '')) + '></td>' +
+                    '<td><input type="checkbox" data-col="' + escAttr(name) + '" data-field="excluded"' + (ov.excluded ? ' checked' : '') + '></td>' +
                     '</tr>';
             });
             html += '</tbody></table></div>';
@@ -1802,6 +1802,19 @@
             const d = document.createElement('div');
             d.appendChild(document.createTextNode(s));
             return d.innerHTML;
+        }
+
+        // Escape for use inside double-quoted HTML attribute values.
+        // esc() (textContent round-trip) does NOT escape quotes, so values
+        // interpolated into attributes must use this to prevent breaking out
+        // of the attribute and injecting markup/event handlers.
+        function escAttr(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function repr(ch) {
