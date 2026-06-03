@@ -328,5 +328,53 @@ class TestWebGUI(unittest.TestCase):
         self.assertIn('encoding_confidence', data['files'][0])
 
 
+class TestSafeDebug(unittest.TestCase):
+    """Test the _safe_debug guard that prevents remote debug-console RCE."""
+
+    def test_debug_allowed_on_loopback(self):
+        from external_file_detection.web_gui import _safe_debug
+        for host in ('127.0.0.1', 'localhost', '::1', None):
+            self.assertTrue(_safe_debug(host, True),
+                            f"debug should be allowed on loopback host {host!r}")
+
+    def test_debug_disabled_on_non_loopback(self):
+        from external_file_detection.web_gui import _safe_debug
+        # '' binds to all interfaces in Flask, so it must fail closed too.
+        for host in ('0.0.0.0', '192.168.1.10', '::', ''):
+            self.assertFalse(_safe_debug(host, True),
+                             f"debug must be disabled on non-loopback host {host!r}")
+
+    def test_debug_off_stays_off(self):
+        from external_file_detection.web_gui import _safe_debug
+        self.assertFalse(_safe_debug('127.0.0.1', False))
+        self.assertFalse(_safe_debug('0.0.0.0', False))
+
+
+class TestSchemaEditorEscaping(unittest.TestCase):
+    """Guard against XSS regressions in the schema-editor template."""
+
+    def _template(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(here, 'external_file_detection', 'templates', 'index.html')
+        with open(path, 'r', encoding='utf-8') as fh:
+            return fh.read()
+
+    def test_escattr_helper_present(self):
+        tpl = self._template()
+        self.assertIn('function escAttr(', tpl)
+        # escAttr must escape both quote characters
+        self.assertIn("replace(/\"/g, '&quot;')", tpl)
+        self.assertIn("replace(/'/g, '&#39;')", tpl)
+
+    def test_schema_editor_attributes_use_escattr(self):
+        tpl = self._template()
+        # The schema-editor column inputs interpolate untrusted column names
+        # into HTML attributes; those must use escAttr, never esc.
+        self.assertIn("data-col=\"' + escAttr(name)", tpl)
+        self.assertIn("value=\"' + escAttr(ov.colName || name)", tpl)
+        self.assertIn("<option value=\"' + escAttr(t)", tpl)
+        self.assertNotIn("data-col=\"' + esc(name)", tpl)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -197,6 +197,8 @@ class SQLGenerator:
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata['file_path']))[0]
             table_name = _clean_identifier(base)
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
 
         columns = self._generate_column_definitions(metadata, include_nullability=True)
         if not columns:
@@ -238,7 +240,7 @@ class SQLGenerator:
         # Append a commented-out INSERT INTO...SELECT FROM OPENROWSET as a quick-start
         file_name = metadata.get('file_name', metadata['file_path'])
         file_type = metadata.get('file_type', 'csv')
-        blob_path = f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
+        blob_path = _quote_literal(f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
         format_kw = _format_keyword(file_type)
 
         lines += [
@@ -273,10 +275,11 @@ class SQLGenerator:
             if target_platform == 'fabric_sql_db':
                 file_name = metadata.get('file_name', metadata.get('file_path', 'file.csv'))
                 detected_type = metadata.get('file_type', 'csv').upper()
-                blob_path = f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
+                blob_path = _quote_literal(f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
                 if not table_name:
                     base = os.path.splitext(os.path.basename(metadata.get('file_path', 'file')))[0]
                     table_name = _clean_identifier(base)
+                table_name = _escape_identifier(table_name)
 
                 return '\n'.join([
                     '-- ====================================================================',
@@ -322,9 +325,12 @@ class SQLGenerator:
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata['file_path']))[0]
             table_name = _clean_identifier(base)
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
 
         file_type = metadata.get('file_type', '')
         file_path = (file_path_override or metadata['file_path']).replace('\\', '/')
+        file_path_sql = _quote_literal(file_path)
         encoding = metadata.get('encoding', 'utf-8') or 'utf-8'
         codepage = metadata.get('codepage', '65001')
 
@@ -337,7 +343,7 @@ class SQLGenerator:
         delimiter = metadata.get('delimiter', ',') or ','
         has_header = metadata.get('has_header', True)
         first_row = 2 if has_header else 1
-        delim_escaped = delimiter.replace('\t', '\\t')
+        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
         delim_name = self.DELIMITER_NAMES.get(delimiter, repr(delimiter))
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
@@ -363,7 +369,7 @@ class SQLGenerator:
             f'',
             f'-- Step 2: Load the data',
             f'BULK INSERT [{schema_name}].[{table_name}]',
-            f'FROM N\'{file_path}\'',
+            f'FROM N\'{file_path_sql}\'',
             f'WITH',
             f'(',
             f'    FORMAT          = \'CSV\',         -- SQL Server 2017 +',
@@ -415,10 +421,10 @@ class SQLGenerator:
         codepage = metadata.get('codepage', '65001')
         delimiter = metadata.get('delimiter', ',') or ','
         has_header = metadata.get('has_header', True)
-        delim_escaped = delimiter.replace('\t', '\\t')
+        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
 
-        blob_path = storage_url or f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
-        local_path = metadata['file_path'].replace('\\', '/')
+        blob_path = _quote_literal(storage_url or f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
+        local_path = _quote_literal(metadata['file_path'].replace('\\', '/'))
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         lines = [
@@ -502,12 +508,12 @@ class SQLGenerator:
                 clean = _clean_identifier(col_name)
                 kind = nesting.get(col_name, 'scalar')
                 if kind == 'object':
-                    jv_cols.append(f'    JSON_QUERY(doc, \'$.{col_name}\') AS [{clean}]')
+                    jv_cols.append(f'    JSON_QUERY(doc, \'{_quote_json_path(col_name)}\') AS [{clean}]')
                 elif kind == 'array':
-                    jv_cols.append(f'    JSON_QUERY(doc, \'$.{col_name}\') AS [{clean}]')
+                    jv_cols.append(f'    JSON_QUERY(doc, \'{_quote_json_path(col_name)}\') AS [{clean}]')
                 else:
                     sql_t = self._map_type_to_sql(col_type)
-                    jv_cols.append(f'    JSON_VALUE(doc, \'$.{col_name}\') AS [{clean}]')
+                    jv_cols.append(f'    JSON_VALUE(doc, \'{_quote_json_path(col_name)}\') AS [{clean}]')
             jv_select = ',\n'.join(jv_cols) if jv_cols else '    JSON_VALUE(doc, \'$.id\') AS [id]'
 
             if json_format == 'ndjson':
@@ -609,7 +615,7 @@ class SQLGenerator:
         codepage = metadata.get('codepage', '65001')
         delimiter = metadata.get('delimiter', ',') or ','
         has_header = metadata.get('has_header', True)
-        delim_escaped = delimiter.replace('\t', '\\t')
+        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
         file_name = metadata.get('file_name', metadata['file_path'])
 
         if file_type in ('csv', 'text'):
@@ -673,7 +679,7 @@ class SQLGenerator:
         codepage = metadata.get('codepage', '65001')
         delimiter = metadata.get('delimiter', ',') or ','
         has_header = metadata.get('has_header', True)
-        delim_escaped = delimiter.replace('\t', '\\t')
+        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
 
         lines += [
@@ -770,32 +776,33 @@ class SQLGenerator:
 
         if not format_name:
             format_name = f'ff_{metadata["file_type"]}_format'
+        format_name = _escape_identifier(format_name)
 
         config = self._determine_format_config(metadata)
         format_options = [f'    FORMAT_TYPE = {config.format_type}']
 
         if config.field_terminator:
-            format_options.append(f'    FIELD_TERMINATOR = \'{config.field_terminator}\'')
+            format_options.append(f'    FIELD_TERMINATOR = \'{_quote_literal(config.field_terminator)}\'')
         if config.string_delimiter:
-            format_options.append(f'    STRING_DELIMITER = \'{config.string_delimiter}\'')
+            format_options.append(f'    STRING_DELIMITER = \'{_quote_literal(config.string_delimiter)}\'')
         if config.date_format:
-            format_options.append(f'    DATE_FORMAT = \'{config.date_format}\'')
+            format_options.append(f'    DATE_FORMAT = \'{_quote_literal(config.date_format)}\'')
         if config.use_type_default:
             format_options.append(f'    USE_TYPE_DEFAULT = TRUE')
         if config.encoding and config.encoding != 'UTF8':
-            format_options.append(f'    ENCODING = \'{config.encoding}\'')
+            format_options.append(f'    ENCODING = \'{_quote_literal(config.encoding)}\'')
         if config.first_row != 1:
             format_options.append(f'    FIRST_ROW = {config.first_row}')
         if config.data_compression:
-            format_options.append(f'    DATA_COMPRESSION = \'{config.data_compression}\'')
+            format_options.append(f'    DATA_COMPRESSION = \'{_quote_literal(config.data_compression)}\'')
         if config.row_terminator:
-            format_options.append(f'    ROW_TERMINATOR = \'{config.row_terminator}\'')
+            format_options.append(f'    ROW_TERMINATOR = \'{_quote_literal(config.row_terminator)}\'')
         if config.serialization_encoding:
-            format_options.append(f'    SERIALIZATION_ENCODING = \'{config.serialization_encoding}\'')
+            format_options.append(f'    SERIALIZATION_ENCODING = \'{_quote_literal(config.serialization_encoding)}\'')
         if config.serializer_method:
-            format_options.append(f'    SERIALIZER_METHOD = \'{config.serializer_method}\'')
+            format_options.append(f'    SERIALIZER_METHOD = \'{_quote_literal(config.serializer_method)}\'')
         if config.deserializer_method:
-            format_options.append(f'    DESERIALIZER_METHOD = \'{config.deserializer_method}\'')
+            format_options.append(f'    DESERIALIZER_METHOD = \'{_quote_literal(config.deserializer_method)}\'')
 
         sql_parts = [
             f'-- CREATE EXTERNAL FILE FORMAT  (PolyBase / Synapse Dedicated or Serverless)',
@@ -870,6 +877,11 @@ class SQLGenerator:
             location = metadata['file_path']
         if not file_format:
             file_format = f'ff_{metadata["file_type"]}_format'
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
+        file_format = _escape_identifier(file_format)
+        if data_source:
+            data_source = _escape_identifier(data_source)
 
         columns = self._generate_column_definitions(metadata, include_nullability=False)
         if not columns:
@@ -878,7 +890,7 @@ class SQLGenerator:
         with_options = []
         if data_source:
             with_options.append(f'    DATA_SOURCE = [{data_source}]')
-        with_options.append(f'    LOCATION = \'{location}\'')
+        with_options.append(f'    LOCATION = \'{_quote_literal(location)}\'')
         with_options.append(f'    FILE_FORMAT = [{file_format}]')
         with_options.append(f'    REJECT_TYPE = VALUE')
         with_options.append(f'    REJECT_VALUE = 0')
@@ -955,14 +967,16 @@ class SQLGenerator:
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata['file_path']))[0]
             table_name = _clean_identifier(base)
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
 
         file_type = metadata.get('file_type', 'csv')
         file_name = metadata.get('file_name', metadata['file_path'])
         encoding = metadata.get('encoding', 'utf-8') or 'utf-8'
         delimiter = metadata.get('delimiter', ',') or ','
         has_header = metadata.get('has_header', True)
-        delim_escaped = delimiter.replace('\t', '\\t')
-        blob_path = storage_url or f'https://<storage_account>.blob.core.windows.net/<container>/<path>/{file_name}'
+        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
+        blob_path = _quote_literal(storage_url or f'https://<storage_account>.blob.core.windows.net/<container>/<path>/{file_name}')
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         lines = [
@@ -1050,6 +1064,7 @@ class SQLGenerator:
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         file_type = (metadata or {}).get('file_type', 'csv')
+        data_source = _escape_identifier(data_source)
         lines = [
             f'-- ====================================================================',
             f'-- PREREQUISITE SETUP  ({platform_label})',
@@ -1135,6 +1150,8 @@ class SQLGenerator:
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata.get('file_path', 'data')))[0]
             table_name = _clean_identifier(base)
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
 
         file_path_sql = metadata.get('file_path', r'C:/data/file.json').replace('\\', '/').replace("'", "''")
 
@@ -1174,9 +1191,9 @@ class SQLGenerator:
                 clean = _clean_identifier(col_name)
                 kind = nesting.get(col_name, 'scalar')
                 if kind in ('object', 'array'):
-                    jv.append(f'    JSON_QUERY(@json, \'$.{col_name}\') AS [{clean}]')
+                    jv.append(f'    JSON_QUERY(@json, \'{_quote_json_path(col_name)}\') AS [{clean}]')
                 else:
-                    jv.append(f'    JSON_VALUE(@json, \'$.{col_name}\') AS [{clean}]')
+                    jv.append(f'    JSON_VALUE(@json, \'{_quote_json_path(col_name)}\') AS [{clean}]')
             lines.append(',\n'.join(jv) + ';' if jv else '    @json;')
         else:
             lines += [
@@ -1217,7 +1234,7 @@ class SQLGenerator:
                     f'    child.[key]  AS child_key,',
                     f'    child.[value] AS child_value',
                     f'FROM OPENJSON(@json) AS parent',
-                    f'CROSS APPLY OPENJSON(parent.[value], \'$.{col_name}\') AS child;',
+                    f'CROSS APPLY OPENJSON(parent.[value], \'{_quote_json_path(col_name)}\') AS child;',
                 ]
 
         # ---- Section 4: Validation with ISJSON --------------------------
@@ -1239,7 +1256,7 @@ class SQLGenerator:
                 f'-- ----------------------------------------------------------------',
                 f'-- 5. JSON_PATH_EXISTS  ({platform_label})',
                 f'-- ----------------------------------------------------------------',
-                f'SELECT JSON_PATH_EXISTS(@json, \'$.{first_col}\') AS path_exists;',
+                f'SELECT JSON_PATH_EXISTS(@json, \'{_quote_json_path(first_col)}\') AS path_exists;',
             ]
         elif schema and not has_path_exists:
             lines += [
@@ -1258,13 +1275,13 @@ class SQLGenerator:
                 f'-- ----------------------------------------------------------------',
                 f'-- 6. JSON_MODIFY  — update a value in the JSON document',
                 f'-- ----------------------------------------------------------------',
-                f'SET @json = JSON_MODIFY(@json, \'$.{first_col}\', \'new_value\');',
-                f'-- Verify: SELECT JSON_VALUE(@json, \'$.{first_col}\');',
+                f'SET @json = JSON_MODIFY(@json, \'{_quote_json_path(first_col)}\', \'new_value\');',
+                f'-- Verify: SELECT JSON_VALUE(@json, \'{_quote_json_path(first_col)}\');',
             ]
 
         # ---- Section 7: Cloud OPENROWSET + OPENJSON  (Synapse / Fabric) ---
         if has_openrowset_cloud:
-            blob_path = f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}'
+            blob_path = _quote_literal(f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
             lines += [
                 f'',
                 f'-- ----------------------------------------------------------------',
@@ -1335,6 +1352,9 @@ class SQLGenerator:
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata.get('file_path', 'data')))[0]
             table_name = _clean_identifier(base)
+        root_label = _quote_literal(table_name)  # literal context (FOR JSON ROOT)
+        table_name = _escape_identifier(table_name)
+        schema_name = _escape_identifier(schema_name)
         schema = metadata.get('schema') or []
         nesting = metadata.get('json_nesting') or {}
 
@@ -1343,9 +1363,9 @@ class SQLGenerator:
             clean = _clean_identifier(col_name)
             kind = nesting.get(col_name, 'scalar')
             if kind in ('object', 'array'):
-                select_cols.append(f'    JSON_QUERY([{clean}]) AS [{col_name}]')
+                select_cols.append(f'    JSON_QUERY([{clean}]) AS [{_escape_identifier(col_name)}]')
             else:
-                select_cols.append(f'    [{clean}] AS [{col_name}]')
+                select_cols.append(f'    [{clean}] AS [{_escape_identifier(col_name)}]')
 
         cols_str = ',\n'.join(select_cols) if select_cols else '    *'
 
@@ -1365,7 +1385,7 @@ class SQLGenerator:
             f'SELECT',
             cols_str,
             f'FROM [{schema_name}].[{table_name}]',
-            f'FOR JSON PATH, ROOT(\'{table_name}\');',
+            f'FOR JSON PATH, ROOT(\'{root_label}\');',
             f'',
             f'-- 3. Include NULL values in output (omitted by default)',
             f'SELECT',
@@ -1387,7 +1407,7 @@ class SQLGenerator:
                 f'SELECT',
                 f'    JSON_OBJECT(',
             ]
-            jo_pairs = [f'        \'{col_name}\': [{_clean_identifier(col_name)}]' for col_name, _ in schema[:6]]
+            jo_pairs = [f'        \'{_quote_literal(col_name)}\': [{_clean_identifier(col_name)}]' for col_name, _ in schema[:6]]
             lines.append(',\n'.join(jo_pairs) if jo_pairs else '        \'data\': *')
             lines += [
                 f'    ) AS json_row',
@@ -1655,7 +1675,7 @@ class SQLGenerator:
             clean_name = _clean_identifier(col_name)
             # Use explicit SQL type override if provided by schema editor
             if col_name in sql_type_overrides:
-                sql_type = sql_type_overrides[col_name]
+                sql_type = _safe_sql_type(sql_type_overrides[col_name])
             else:
                 sql_type = self._map_type_to_sql(col_type, max_length=max_lengths.get(col_name))
             if include_nullability:
@@ -1681,14 +1701,14 @@ class SQLGenerator:
             clean = _clean_identifier(col_name)
             kind = nesting.get(col_name, 'scalar')
             if kind in ('object', 'array'):
-                cols.append(f'{pad}[{clean}] NVARCHAR(MAX) \'$.{col_name}\' AS JSON')
+                cols.append(f'{pad}[{clean}] NVARCHAR(MAX) \'{_quote_json_path(col_name)}\' AS JSON')
             else:
                 if col_name in sql_type_overrides:
-                    sql_type = sql_type_overrides[col_name]
+                    sql_type = _safe_sql_type(sql_type_overrides[col_name])
                 else:
                     sql_type = self._map_type_to_sql(col_type,
                                                      max_length=max_lengths.get(col_name))
-                cols.append(f'{pad}[{clean}] {sql_type} \'$.{col_name}\'')
+                cols.append(f'{pad}[{clean}] {sql_type} \'{_quote_json_path(col_name)}\'')
         return cols
 
     def _map_type_to_sql(self, data_type: str, max_length: int = None) -> str:
@@ -1726,6 +1746,58 @@ def _clean_identifier(name: str) -> str:
     if clean and clean[0].isdigit():
         clean = 'col_' + clean
     return clean or 'column_1'
+
+
+def _escape_identifier(name: str) -> str:
+    """Escape a value for safe use inside a T-SQL bracket-quoted ``[identifier]``.
+
+    Bracket-quoting requires that any closing bracket be doubled so a value can
+    never terminate the identifier early. Unlike :func:`_clean_identifier`, the
+    original characters are preserved so caller-supplied names (table, schema,
+    data source, ...) keep their intended form while remaining injection-safe.
+    """
+    return str(name).replace(']', ']]')
+
+
+def _quote_literal(value: Any) -> str:
+    """Escape a value for safe use inside a T-SQL single-quoted ``'string'`` literal."""
+    return str(value).replace("'", "''")
+
+
+_SIMPLE_JSON_KEY = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _quote_json_path(name: str) -> str:
+    """Build a safe T-SQL JSON path (``$.<key>``) for *name*.
+
+    Simple identifiers are emitted as ``$.key``. Names containing spaces, dots
+    or other special characters are wrapped in double quotes (``$."weird key"``)
+    as required by SQL Server. The result is additionally escaped so it is safe
+    to embed inside a single-quoted SQL string literal.
+    """
+    n = str(name)
+    if _SIMPLE_JSON_KEY.match(n):
+        path = f'$.{n}'
+    else:
+        esc = n.replace('\\', '\\\\').replace('"', '\\"')
+        path = f'$."{esc}"'
+    return path.replace("'", "''")
+
+
+# Allowed shape for a SQL data type: a type name optionally followed by a
+# parenthesised length/precision such as NVARCHAR(255), DECIMAL(18,4) or
+# VARBINARY(MAX). Anything else (e.g. a value smuggled in from the web schema
+# editor) is rejected and replaced with a safe default.
+_VALID_SQL_TYPE = re.compile(
+    r'^[A-Za-z][A-Za-z0-9_]*\s*(\(\s*(\d+|MAX)\s*(,\s*\d+\s*)?\))?$',
+    re.IGNORECASE,
+)
+
+
+def _safe_sql_type(sql_type: str, fallback: str = 'NVARCHAR(MAX)') -> str:
+    """Return *sql_type* only if it matches the allowed type pattern, else *fallback*."""
+    candidate = str(sql_type).strip()
+    return candidate if _VALID_SQL_TYPE.match(candidate) else fallback
 
 
 def _format_keyword(file_type: str) -> str:
