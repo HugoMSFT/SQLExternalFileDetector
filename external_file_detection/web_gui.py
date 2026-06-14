@@ -53,14 +53,23 @@ def _validate_path(path: str, root_dir: str = None,
     if not path:
         raise ValueError("Path cannot be empty")
     
+    # Reject obviously illegal characters before touching the filesystem
+    if any(c in path for c in '<>|?*'):
+        raise ValueError("Path contains unsafe characters")
+
     # Resolve symlinks and normalize the path
     normalized_path = os.path.realpath(os.path.abspath(path))
     
-    # Root directory constraint (after symlink resolution)
+    # Root directory constraint (after symlink resolution). commonpath is robust
+    # against trailing-separator quirks across platforms.
     root = os.path.realpath(os.path.abspath(root_dir or os.getcwd()))
-    if not normalized_path.startswith(root + os.sep) and normalized_path != root:
+    try:
+        if os.path.commonpath([root, normalized_path]) != root:
+            raise ValueError("Path is outside the allowed root directory")
+    except ValueError:
+        # commonpath raises when paths are on different drives (Windows)
         raise ValueError("Path is outside the allowed root directory")
-    
+
     # Check if path exists
     if not os.path.exists(normalized_path):
         raise ValueError("Path does not exist")
@@ -71,11 +80,7 @@ def _validate_path(path: str, root_dir: str = None,
     
     if os.path.isdir(normalized_path) and not allow_dirs:
         raise ValueError("Directory path not allowed")
-    
-    # Ensure path components don't contain traversal or illegal characters
-    if '..' in Path(path).parts or any(c in normalized_path for c in '<>|?*'):
-        raise ValueError("Path contains unsafe characters")
-    
+
     return normalized_path
 
 
@@ -114,7 +119,15 @@ class ExternalFileDetectionWebGUI:
             
         self.app = Flask(__name__, template_folder='templates', static_folder=None)
         self.app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
-        self.app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+        secret_key = os.environ.get('FLASK_SECRET_KEY')
+        if not secret_key:
+            secret_key = os.urandom(24).hex()
+            logger.warning(
+                'FLASK_SECRET_KEY is not set; generated an ephemeral key. '
+                'Sessions will not survive a process restart. Set FLASK_SECRET_KEY '
+                'to a stable secret in production.'
+            )
+        self.app.secret_key = secret_key
         self.detector_app = ExternalFileDetectorApp()
         self.file_detector = FileDetector()
         self.sql_generator = self.detector_app.sql_generator
@@ -708,6 +721,7 @@ class ExternalFileDetectionWebGUI:
                 ddl = self.detector_app.generate_data_source_ddl(
                     data['name'], data['storage_type'],
                     data['location'], data.get('credential'),
+                    target_platform=data.get('target_platform', 'sql_server_2022'),
                 )
                 return jsonify({'sql_ddl': ddl})
             except Exception as e:

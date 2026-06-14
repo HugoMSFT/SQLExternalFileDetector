@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class ExternalFileDetectorApp:
     """Main application for external file detection and SQL DDL generation."""
     
-    def __init__(self, storage_config: Dict[str, Any] = None):
+    def __init__(self, storage_config: Optional[Dict[str, Any]] = None):
         """
         Initialize the external file detector application.
         
@@ -28,7 +28,7 @@ class ExternalFileDetectorApp:
         self.sql_generator = SQLGenerator()
         self.storage_config = storage_config or {}
     
-    def analyze_location(self, location: str, data_source: str = None) -> Dict[str, Any]:
+    def analyze_location(self, location: str, data_source: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze files at the given location and generate SQL DDL.
         
@@ -92,7 +92,7 @@ class ExternalFileDetectorApp:
         return results
     
     def _analyze_single_file(self, file_path: str, storage_handler: StorageHandler,
-                           data_source: str = None, temp_dir: str = None) -> Dict[str, Any]:
+                           data_source: Optional[str] = None, temp_dir: Optional[str] = None) -> Dict[str, Any]:
         """Analyze a single file and generate SQL DDL."""
         local_path = file_path
         
@@ -163,7 +163,7 @@ class ExternalFileDetectorApp:
         
         return f"ext_{clean_name}"
     
-    def analyze_files(self, file_paths: List[str], data_source: str = None) -> List[Dict[str, Any]]:
+    def analyze_files(self, file_paths: List[str], data_source: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Analyze multiple specific files.
         
@@ -188,7 +188,8 @@ class ExternalFileDetectorApp:
         return results
     
     def generate_data_source_ddl(self, data_source_name: str, storage_type: str,
-                                location: str, credential: str = None) -> str:
+                                location: str, credential: Optional[str] = None,
+                                target_platform: str = 'sql_server_2022') -> str:
         """
         Generate CREATE EXTERNAL DATA SOURCE statement.
         
@@ -197,30 +198,40 @@ class ExternalFileDetectorApp:
             storage_type: Type of storage (S3, Azure, etc.)
             location: Base location/URL
             credential: Optional credential name
+            target_platform: SQL platform. TYPE = HADOOP is only emitted for
+                'sql_server_2019'; the Hadoop external data source type was
+                deprecated and removed in SQL Server 2022+. On newer platforms
+                (2022, 2025, Azure SQL DB/MI, Fabric) TYPE is omitted entirely.
             
         Returns:
             SQL CREATE EXTERNAL DATA SOURCE statement
         """
-        # Sanitize inputs to prevent SQL injection
+        # Sanitize inputs to prevent SQL injection / statement breaking
         safe_ds_name = self._sanitize_sql_identifier(data_source_name)
-        safe_location = location.replace("'", "''")
-        
+        # Strip control chars (newlines, NULs, etc.) from location and escape quotes
+        safe_location = ''.join(
+            c for c in location if c == '\t' or (ord(c) >= 32 and c != "\x7f")
+        ).replace("'", "''")
+
+        is_sql2019 = (target_platform or '').lower() == 'sql_server_2019'
+        storage_lc = (storage_type or '').lower()
+
         sql_parts = [f"CREATE EXTERNAL DATA SOURCE [{safe_ds_name}]"]
         sql_parts.append("WITH (")
         
         options = []
-        
-        if storage_type.lower() == 's3':
-            options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{safe_location}'")
-        elif storage_type.lower() == 'azure':
-            options.append(f"    TYPE = BLOB_STORAGE")
-            options.append(f"    LOCATION = '{safe_location}'")
-        else:
-            # Generic/local
-            options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{safe_location}'")
-        
+        if is_sql2019:
+            # SQL Server 2019: TYPE is required.
+            # HADOOP for PolyBase (S3/ADLS), BLOB_STORAGE for Azure Blob with SAS.
+            if storage_lc == 'azure':
+                options.append("    TYPE = BLOB_STORAGE")
+            else:
+                options.append("    TYPE = HADOOP")
+        # SQL Server 2022+, Azure SQL DB/MI, Fabric SQL DB: TYPE clause is
+        # no longer required and is omitted.
+
+        options.append(f"    LOCATION = '{safe_location}'")
+
         if credential:
             safe_credential = self._sanitize_sql_identifier(credential)
             options.append(f"    CREDENTIAL = [{safe_credential}]")

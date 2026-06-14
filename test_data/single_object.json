@@ -1,0 +1,14 @@
+{
+  "report_id": "R-2026-04-16",
+  "generated_at": "2026-04-16T08:00:00Z",
+  "totals": {
+    "orders": 1284,
+    "revenue": 95412.33,
+    "refunds": 12
+  },
+  "tags": [
+    "daily",
+    "sales",
+    "auto"
+  ]
+}

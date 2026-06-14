@@ -1,0 +1,4 @@
+product;qty;unit_price;total;sold_on
+Widget A;3;19,95;59,85;2026-03-15
+Widget B;1;249,00;249,00;2026-03-16
+Widget C;12;4,50;54,00;2026-03-17

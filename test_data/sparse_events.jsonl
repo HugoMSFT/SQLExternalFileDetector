@@ -1,0 +1,4 @@
+{"event_id": 1, "type": "login", "user_id": "u-1"}
+{"event_id": 2, "type": "purchase", "user_id": "u-1", "amount": 12.5, "currency": "USD"}
+{"event_id": 3, "type": "error", "user_id": "u-2", "error_code": 500, "message": "boom"}
+{"event_id": 4, "type": "logout", "user_id": "u-1", "session_ms": 480000}

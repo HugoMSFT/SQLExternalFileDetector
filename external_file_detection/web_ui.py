@@ -28,6 +28,7 @@ def run_web_ui(host: str = "127.0.0.1", port: int = 5000, debug: bool = False,
                root_dir: str = None):
     """Run the web UI server."""
     app = create_app(root_dir=root_dir)
+    logger.info("External File Detection Web UI running at http://%s:%d", host, port)
     print(f"\n  External File Detection Web UI")
     print(f"  Running at: http://{host}:{port}")
     print(f"  Press Ctrl+C to stop\n")

@@ -1,0 +1,37 @@
+[
+  {
+    "org": "Contoso",
+    "departments": [
+      {
+        "name": "Engineering",
+        "teams": [
+          {
+            "name": "Backend",
+            "members": [
+              {
+                "id": 1,
+                "name": "Alice",
+                "skills": [
+                  "python",
+                  "sql"
+                ]
+              },
+              {
+                "id": 2,
+                "name": "Bob",
+                "skills": [
+                  "go",
+                  "rust"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Frontend",
+            "members": []
+          }
+        ]
+      }
+    ]
+  }
+]

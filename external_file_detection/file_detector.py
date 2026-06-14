@@ -38,6 +38,7 @@ def _ensure_pyarrow():
 CSV_SAMPLE_SIZE = 4096
 ENCODING_DETECTION_BYTES = 65536
 LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+MAX_CACHE_ENTRIES = 512  # Cap on encoding/metadata cache size to bound memory
 
 
 def _json_safe(val: Any) -> Any:
@@ -91,6 +92,20 @@ class FileDetector:
         self._cache_lock = threading.Lock()
         self._encoding_cache: Dict[Tuple[str, float, int], Tuple[str, float]] = {}
         self._metadata_cache: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
+
+    @staticmethod
+    def _store_bounded(cache: Dict, key: Any, value: Any,
+                       max_entries: int = MAX_CACHE_ENTRIES) -> None:
+        """Insert *value* into *cache* under *key*, evicting oldest entry if full.
+
+        Must be called while holding ``self._cache_lock``. Uses dict insertion order
+        (guaranteed in Python 3.7+) as the eviction policy — effectively FIFO.
+        """
+        if key not in cache and len(cache) >= max_entries:
+            # Evict oldest entry (first inserted)
+            oldest = next(iter(cache))
+            cache.pop(oldest, None)
+        cache[key] = value
 
     def _get_file_signature(self, file_path: str) -> Optional[Tuple[str, float, int]]:
         """Return a cache signature for a file or directory based on path + stat info."""
@@ -153,6 +168,7 @@ class FileDetector:
             pass
 
         # JSON — only read the first few KB instead of the whole file
+        sample_stripped = ''
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 sample = f.read(8192)
@@ -160,13 +176,12 @@ class FileDetector:
             if sample_stripped and sample_stripped[0] in ('{', '['):
                 json.loads(sample_stripped)
                 return 'json'
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            # Partial read may fail to parse; check if it starts like JSON
-            try:
-                if sample_stripped and sample_stripped[0] in ('{', '['):
-                    return 'json'
-            except Exception:
-                pass
+        except (json.JSONDecodeError, ValueError):
+            # Partial read may fail to parse; a leading '{' or '[' is still a strong JSON hint
+            if sample_stripped and sample_stripped[0] in ('{', '['):
+                return 'json'
+        except (UnicodeDecodeError, OSError):
+            pass
 
         # CSV / delimited text
         try:
@@ -202,7 +217,7 @@ class FileDetector:
             detected = (encoding, confidence)
             if signature:
                 with self._cache_lock:
-                    self._encoding_cache[signature] = detected
+                    self._store_bounded(self._encoding_cache, signature, detected)
             return detected
         except ImportError:
             pass
@@ -214,14 +229,14 @@ class FileDetector:
                 detected = (enc, 0.5)
                 if signature:
                     with self._cache_lock:
-                        self._encoding_cache[signature] = detected
+                        self._store_bounded(self._encoding_cache, signature, detected)
                 return detected
             except (UnicodeDecodeError, LookupError):
                 continue
         detected = ('utf-8', 0.0)
         if signature:
             with self._cache_lock:
-                self._encoding_cache[signature] = detected
+                self._store_bounded(self._encoding_cache, signature, detected)
         return detected
 
     def encoding_to_codepage(self, encoding: str) -> str:
@@ -303,7 +318,7 @@ class FileDetector:
 
         if signature:
             with self._cache_lock:
-                self._metadata_cache[signature] = deepcopy(metadata)
+                self._store_bounded(self._metadata_cache, signature, deepcopy(metadata))
         return metadata
 
     # ------------------------------------------------------------------
@@ -505,11 +520,23 @@ class FileDetector:
         }
 
         try:
-            # Find the latest metadata file
+            # Find the latest metadata file. Iceberg names them v<N>.metadata.json
+            # where N is not zero-padded, so sort by parsed integer rather than lex.
             meta_dir = os.path.join(file_path, 'metadata')
-            meta_files = sorted(_glob.glob(os.path.join(meta_dir, 'v*.metadata.json')))
+            meta_files = _glob.glob(os.path.join(meta_dir, 'v*.metadata.json'))
             if not meta_files:
                 return {'error': 'No Iceberg metadata file found', 'encoding': 'binary'}
+
+            def _iceberg_version(p: str) -> int:
+                base = os.path.basename(p)
+                # strip leading 'v' and trailing '.metadata.json'
+                num = base[1:].split('.', 1)[0]
+                try:
+                    return int(num)
+                except ValueError:
+                    return -1
+
+            meta_files.sort(key=_iceberg_version)
 
             with open(meta_files[-1], 'r', encoding='utf-8') as f:
                 meta = json.load(f)
@@ -685,9 +712,10 @@ class FileDetector:
     def _analyze_text(self, file_path: str, encoding: str = 'utf-8') -> Dict[str, Any]:
         """Analyse plain text file metadata."""
         try:
+            # Stream line-by-line to avoid loading large files fully into memory
             with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                lines = f.readlines()
-            return {'row_count': len(lines)}
+                row_count = sum(1 for _ in f)
+            return {'row_count': row_count}
         except Exception as e:
             return {'error': str(e)}
 

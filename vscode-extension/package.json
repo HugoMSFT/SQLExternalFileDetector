@@ -1,0 +1,263 @@
+{
+  "name": "external-file-detection",
+  "displayName": "External File Detection",
+  "description": "Detect file types and generate SQL DDL for external tables — supports CSV, JSON, Parquet, Delta, Iceberg and more across SQL Server, Azure SQL, and Fabric.",
+  "version": "0.1.0",
+  "publisher": "HugoMSFT",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Data Science",
+    "Other"
+  ],
+  "keywords": [
+    "sql",
+    "external-table",
+    "polybase",
+    "parquet",
+    "csv",
+    "json",
+    "delta-lake",
+    "iceberg",
+    "fabric",
+    "azure-sql"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "icon": "media/icon.png",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "externalFileDetection",
+          "title": "External File Detection",
+          "icon": "$(database)"
+        }
+      ]
+    },
+    "views": {
+      "externalFileDetection": [
+        {
+          "id": "efd.analyzedFiles",
+          "name": "Analyzed Files"
+        },
+        {
+          "id": "efd.platformInfo",
+          "name": "Target Platform"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "efd.analyzeFile",
+        "title": "Analyze External File",
+        "category": "External File Detection",
+        "icon": "$(search)"
+      },
+      {
+        "command": "efd.analyzeFolder",
+        "title": "Analyze Folder for External Files",
+        "category": "External File Detection",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "efd.generateDDL",
+        "title": "Generate SQL DDL",
+        "category": "External File Detection",
+        "icon": "$(code)"
+      },
+      {
+        "command": "efd.generateAllStatements",
+        "title": "Generate All SQL Statements",
+        "category": "External File Detection",
+        "icon": "$(files)"
+      },
+      {
+        "command": "efd.previewData",
+        "title": "Preview File Data",
+        "category": "External File Detection",
+        "icon": "$(table)"
+      },
+      {
+        "command": "efd.setPlatform",
+        "title": "Set Target SQL Platform",
+        "category": "External File Detection",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "efd.clearResults",
+        "title": "Clear Analyzed Results",
+        "category": "External File Detection",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "efd.exportResults",
+        "title": "Export Results to File",
+        "category": "External File Detection",
+        "icon": "$(export)"
+      },
+      {
+        "command": "efd.refreshTree",
+        "title": "Refresh",
+        "category": "External File Detection",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "efd.copySQL",
+        "title": "Copy SQL to Clipboard",
+        "category": "External File Detection",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "efd.removeAnalyzedFile",
+        "title": "Remove from Results",
+        "category": "External File Detection",
+        "icon": "$(close)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "efd.analyzeFile",
+          "when": "!explorerResourceIsFolder",
+          "group": "externalFileDetection@1"
+        },
+        {
+          "command": "efd.analyzeFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "externalFileDetection@1"
+        },
+        {
+          "command": "efd.generateDDL",
+          "when": "!explorerResourceIsFolder",
+          "group": "externalFileDetection@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "efd.analyzeFile",
+          "group": "externalFileDetection@1"
+        },
+        {
+          "command": "efd.generateDDL",
+          "group": "externalFileDetection@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "efd.refreshTree",
+          "when": "view == efd.analyzedFiles",
+          "group": "navigation"
+        },
+        {
+          "command": "efd.clearResults",
+          "when": "view == efd.analyzedFiles",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "efd.generateDDL",
+          "when": "view == efd.analyzedFiles && viewItem == analyzedFile",
+          "group": "inline"
+        },
+        {
+          "command": "efd.removeAnalyzedFile",
+          "when": "view == efd.analyzedFiles && viewItem == analyzedFile",
+          "group": "inline"
+        },
+        {
+          "command": "efd.previewData",
+          "when": "view == efd.analyzedFiles && viewItem == analyzedFile"
+        },
+        {
+          "command": "efd.generateAllStatements",
+          "when": "view == efd.analyzedFiles && viewItem == analyzedFile"
+        },
+        {
+          "command": "efd.copySQL",
+          "when": "view == efd.analyzedFiles && viewItem == analyzedFile"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "External File Detection",
+      "properties": {
+        "externalFileDetection.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python interpreter with external_file_detection installed."
+        },
+        "externalFileDetection.targetPlatform": {
+          "type": "string",
+          "default": "sql_server_2022",
+          "enum": [
+            "sql_server_2019",
+            "sql_server_2022",
+            "sql_server_2025",
+            "azure_sql_database",
+            "azure_sql_managed_instance",
+            "fabric_sql_database"
+          ],
+          "enumDescriptions": [
+            "SQL Server 2019",
+            "SQL Server 2022",
+            "SQL Server 2025",
+            "Azure SQL Database",
+            "Azure SQL Managed Instance",
+            "Microsoft Fabric SQL Database"
+          ],
+          "description": "Target SQL platform for DDL generation."
+        },
+        "externalFileDetection.defaultDataSource": {
+          "type": "string",
+          "default": "MyExternalDataSource",
+          "description": "Default external data source name for generated SQL."
+        },
+        "externalFileDetection.defaultSchema": {
+          "type": "string",
+          "default": "dbo",
+          "description": "Default schema name for generated SQL objects."
+        },
+        "externalFileDetection.defaultFileFormat": {
+          "type": "string",
+          "default": "",
+          "description": "Default external file format name. If empty, will be auto-generated."
+        },
+        "externalFileDetection.credentialName": {
+          "type": "string",
+          "default": "",
+          "description": "Database scoped credential name for external data source."
+        },
+        "externalFileDetection.includebestPractices": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include best practices comments in generated SQL."
+        },
+        "externalFileDetection.maxPreviewRows": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of rows to show in data preview."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.0.0",
+    "eslint": "^8.50.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "typescript": "^5.3.0"
+  }
+}

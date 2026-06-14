@@ -1,7 +1,7 @@
 {
   "format-version": 2,
-  "table-uuid": "sample-iceberg-table",
-  "location": "/Users/hugoqueiroz/Git/ExternalFileDetection/test_data/iceberg_table",
+  "table-uuid": "sample-iceberg-versioned",
+  "location": "/Users/hugoqueiroz/Git/ExternalFileDetection/test_data/iceberg_versioned",
   "last-sequence-number": 1,
   "last-updated-ms": 1760000000000,
   "last-column-id": 4,
@@ -11,25 +11,25 @@
     "fields": [
       {
         "id": 1,
-        "name": "txn_id",
+        "name": "metric_id",
         "required": true,
         "type": "string"
       },
       {
         "id": 2,
-        "name": "store",
+        "name": "metric_name",
         "required": false,
         "type": "string"
       },
       {
         "id": 3,
-        "name": "amount",
+        "name": "value",
         "required": false,
         "type": "double"
       },
       {
         "id": 4,
-        "name": "txn_date",
+        "name": "recorded_on",
         "required": false,
         "type": "date"
       }
@@ -52,6 +52,7 @@
   "snapshot-log": [],
   "metadata-log": [],
   "properties": {
-    "write.format.default": "parquet"
+    "write.format.default": "parquet",
+    "note": "v1 metadata"
   }
 }

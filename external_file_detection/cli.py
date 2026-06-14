@@ -61,33 +61,15 @@ def main(verbose):
 
 
 @main.command()
-@click.option('--host', default='127.0.0.1', help='Host to bind to')
-@click.option('--port', default=5000, help='Port to bind to')
-@click.option('--debug', is_flag=True, help='Enable debug mode')
-@click.option('--root-dir', default=None, help='Restrict file browsing to this directory tree')
-def gui(host, port, debug, root_dir):
-    """Launch the web-based graphical user interface."""
-    try:
-        from .web_gui import ExternalFileDetectionWebGUI
-        app = ExternalFileDetectionWebGUI(root_dir=root_dir)
-        app.run(host=host, port=port, debug=debug)
-    except ImportError as e:
-        click.echo(f"Error: Could not launch web GUI: {e}")
-        click.echo("Please ensure Flask is installed: pip install flask")
-    except Exception as e:
-        click.echo(f"Error: {e}")
-
-
-@main.command()
 @click.argument('location', type=str)
 @click.option('--data-source', '-d', default=None, 
               help='Name of the external data source for SQL DDL')
 @click.option('--output', '-o', default=None, 
               help='Output file path for results')
-@click.option('--format', '-f', default='sql', type=click.Choice(['sql', 'json']),
+@click.option('--format', '-f', 'output_format', default='sql', type=click.Choice(['sql', 'json']),
               help='Output format')
 @storage_options
-def analyze(location, data_source, output, format, aws_access_key_id, 
+def analyze(location, data_source, output, output_format, aws_access_key_id,
            aws_secret_access_key, aws_region, azure_account_name,
            azure_account_key, azure_connection_string):
     """Analyze files at the specified location."""
@@ -117,11 +99,11 @@ def analyze(location, data_source, output, format, aws_access_key_id,
         
         # Export results if output specified
         if output:
-            app.export_results(results, output, format)
+            app.export_results(results, output, output_format)
             click.echo(f"\nResults exported to: {output}")
         else:
             # Display results to console
-            if format == 'json':
+            if output_format == 'json':
                 click.echo("\nResults (JSON):")
                 click.echo(json.dumps(results, indent=2, default=str))
             else:
@@ -148,12 +130,20 @@ def analyze(location, data_source, output, format, aws_access_key_id,
               help='Name of the external data source for SQL DDL')
 @click.option('--output', '-o', default=None,
               help='Output file path for results')
-@click.option('--format', '-f', default='sql', type=click.Choice(['sql', 'json']),
+@click.option('--format', '-f', 'output_format', default='sql', type=click.Choice(['sql', 'json']),
               help='Output format')
-def analyze_files(files, data_source, output, format):
+@storage_options
+def analyze_files(files, data_source, output, output_format, aws_access_key_id,
+                  aws_secret_access_key, aws_region, azure_account_name,
+                  azure_account_key, azure_connection_string):
     """Analyze specific files."""
-    
-    app = ExternalFileDetectorApp()
+
+    storage_config = _build_storage_config(
+        aws_access_key_id, aws_secret_access_key, aws_region,
+        azure_account_name, azure_account_key, azure_connection_string
+    )
+
+    app = ExternalFileDetectorApp(storage_config)
     
     try:
         results = app.analyze_files(list(files), data_source)
@@ -168,10 +158,10 @@ def analyze_files(files, data_source, output, format):
                 'files_found': len(results),
                 'files': results
             }
-            app.export_results(export_data, output, format)
+            app.export_results(export_data, output, output_format)
             click.echo(f"Results exported to: {output}")
         else:
-            if format == 'json':
+            if output_format == 'json':
                 click.echo(json.dumps(results, indent=2, default=str))
             else:
                 for result in results:
@@ -193,13 +183,23 @@ def analyze_files(files, data_source, output, format):
 @click.argument('location')
 @click.option('--credential', default=None,
               help='Name of the database credential to use')
-def generate_data_source(name, storage_type, location, credential):
+@click.option('--target-platform', '-t',
+              default='sql_server_2022',
+              type=click.Choice([
+                  'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
+                  'azure_sql_db', 'azure_sql_mi', 'fabric_sql_db',
+              ]),
+              help='SQL target platform. TYPE = HADOOP is only emitted for sql_server_2019.')
+def generate_data_source(name, storage_type, location, credential, target_platform):
     """Generate CREATE EXTERNAL DATA SOURCE statement."""
     
     app = ExternalFileDetectorApp()
     
     try:
-        ddl = app.generate_data_source_ddl(name, storage_type, location, credential)
+        ddl = app.generate_data_source_ddl(
+            name, storage_type, location, credential,
+            target_platform=target_platform,
+        )
         click.echo(ddl)
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -251,10 +251,15 @@ def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
 @click.option('--host', '-h', default='127.0.0.1', help='Host to bind to')
 @click.option('--port', '-p', default=5000, type=int, help='Port to listen on')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def web(host, port, debug):
+@click.option('--root-dir', default=None, help='Restrict file browsing to this directory tree')
+def web(host, port, debug, root_dir):
     """Launch the web UI."""
     from .web_ui import run_web_ui
-    run_web_ui(host=host, port=port, debug=debug)
+    run_web_ui(host=host, port=port, debug=debug, root_dir=root_dir)
+
+
+# Backward-compatible alias: `gui` is an older name for `web`.
+main.add_command(web, name='gui')
 
 
 if __name__ == '__main__':

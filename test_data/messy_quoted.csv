@@ -1,0 +1,5 @@
+id,description,notes,price
+1,"Hello, world","Line1
+Line2",9.99
+2,"Café ☕ — grande","Contains, commas and ""quotes""",4.25
+3,"Simple item","",1.00

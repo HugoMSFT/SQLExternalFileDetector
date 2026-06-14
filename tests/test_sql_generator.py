@@ -680,22 +680,22 @@ def test_openrowset_local_on_sql_server_2022():
     assert 'NOT AVAILABLE' not in sql
 
 
-def test_external_table_not_on_azure_sql_mi():
-    """CREATE EXTERNAL TABLE should show NOT AVAILABLE on Azure SQL MI."""
+def test_external_table_on_azure_sql_mi():
+    """CREATE EXTERNAL TABLE is supported on Azure SQL MI per the PolyBase docs."""
     gen = SQLGenerator()
     meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')]}
     sql = gen.generate_external_table(meta, target_platform='azure_sql_mi')
-    assert 'NOT AVAILABLE' in sql
+    assert 'CREATE EXTERNAL TABLE' in sql
+    assert 'NOT AVAILABLE' not in sql
 
 
-def test_external_table_not_on_fabric_sql_db():
-    """CREATE EXTERNAL TABLE should show guidance on Fabric SQL Database."""
+def test_external_table_on_fabric_sql_db():
+    """CREATE EXTERNAL TABLE is supported on Fabric SQL Database per the docs."""
     gen = SQLGenerator()
     meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')]}
     sql = gen.generate_external_table(meta, target_platform='fabric_sql_db')
-    assert 'not natively supported' in sql
-    assert 'Fabric Shortcuts' in sql
-    assert 'Mirroring' in sql
+    assert 'CREATE EXTERNAL TABLE' in sql
+    assert 'NOT AVAILABLE' not in sql
 
 
 def test_for_json_on_azure_sql_db():
@@ -740,11 +740,12 @@ def test_json_path_exists_on_sql_2022():
     assert 'SELECT JSON_PATH_EXISTS' in sql
 
 
-def test_credential_not_on_azure_sql_mi():
-    """Credential setup not available on Azure SQL MI."""
+def test_credential_on_azure_sql_mi():
+    """Credential/data-source setup is supported on Azure SQL Managed Instance."""
     gen = SQLGenerator()
     sql = gen.generate_credential_setup('DS', 'ff', target_platform='azure_sql_mi')
-    assert 'NOT AVAILABLE' in sql
+    assert 'CREATE DATABASE SCOPED CREDENTIAL' in sql
+    assert 'NOT AVAILABLE' not in sql
 
 
 def test_best_practices_includes_platform_methods():
@@ -846,15 +847,13 @@ def test_generate_all_statements_passes_storage_url():
     assert 'BULK INSERT' in stmts['bulk_insert']
 
 
-def test_fabric_sql_db_external_table_guidance():
-    """Fabric SQL DB external table shows detailed guidance with alternatives."""
+def test_fabric_sql_db_external_table_supported():
+    """Fabric SQL Database supports CREATE EXTERNAL TABLE per the PolyBase docs."""
     gen = SQLGenerator()
     meta = {'file_type': 'csv', 'file_path': 'x.csv', 'schema': [('id', 'int64')]}
     sql = gen.generate_external_table(meta, target_platform='fabric_sql_db')
-    assert 'Shortcuts' in sql
-    assert 'Mirroring' in sql
-    assert 'Cross-warehouse' in sql
-    assert 'Dataflows' in sql
+    assert 'CREATE EXTERNAL TABLE' in sql
+    assert 'NOT AVAILABLE' not in sql
 
 
 # -------------------------------------------------------------------

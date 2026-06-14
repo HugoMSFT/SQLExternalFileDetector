@@ -9,6 +9,61 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# Marker files/paths that identify table-format directories
+_DELTA_MARKER = '_delta_log/'
+_ICEBERG_METADATA_PREFIX = 'metadata/v'
+_ICEBERG_METADATA_SUFFIX = '.metadata.json'
+
+
+def _group_table_directories(keys: List[str]) -> List[str]:
+    """Collapse blob keys belonging to Delta/Iceberg tables into their root folders.
+
+    Given a list of object keys within a single bucket/container, returns a new
+    list where files under a Delta log (``.../_delta_log/``) or Iceberg metadata
+    directory (``.../metadata/v*.metadata.json``) are replaced by a single entry
+    pointing at the table root folder (trailing '/').
+    """
+    table_roots: set = set()
+
+    for key in keys:
+        # Delta: .../<table>/_delta_log/... -> table root is everything before '_delta_log/'
+        idx = key.find('/' + _DELTA_MARKER)
+        if idx >= 0:
+            table_roots.add(key[: idx + 1])  # include trailing '/'
+            continue
+        if key.startswith(_DELTA_MARKER):
+            table_roots.add('')
+            continue
+
+        # Iceberg: .../<table>/metadata/v*.metadata.json
+        meta_idx = key.find('/metadata/')
+        if meta_idx >= 0:
+            after = key[meta_idx + len('/metadata/'):]
+            if after.startswith('v') and after.endswith(_ICEBERG_METADATA_SUFFIX):
+                table_roots.add(key[: meta_idx + 1])
+                continue
+
+    if not table_roots:
+        return list(keys)
+
+    result: List[str] = []
+    seen_roots: set = set()
+    for key in keys:
+        # Skip any key that lives under a recognised table root
+        matched = None
+        for root in table_roots:
+            if root and key.startswith(root):
+                matched = root
+                break
+        if matched is not None:
+            if matched not in seen_roots:
+                seen_roots.add(matched)
+                result.append(matched)
+        else:
+            result.append(key)
+    return result
+
+
 class StorageHandler(ABC):
     """Abstract base class for storage handlers."""
     
@@ -102,12 +157,16 @@ class S3StorageHandler(StorageHandler):
         files = []
         paginator = self.s3_client.get_paginator('list_objects_v2')
         
+        keys: List[str] = []
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             if 'Contents' in page:
                 for obj in page['Contents']:
-                    if not obj['Key'].endswith('/'):  # Skip directories
-                        files.append(f"s3://{bucket}/{obj['Key']}")
-        
+                    if not obj['Key'].endswith('/'):  # Skip directory markers
+                        keys.append(obj['Key'])
+
+        for key in _group_table_directories(keys):
+            files.append(f"s3://{bucket}/{key}")
+
         return files
     
     def get_file_info(self, file_path: str) -> Dict[str, Any]:
@@ -208,12 +267,15 @@ class AzureStorageHandler(StorageHandler):
         container_client = self.blob_service_client.get_container_client(container)
         
         try:
+            keys: List[str] = []
             blob_list = container_client.list_blobs(name_starts_with=prefix)
             for blob in blob_list:
-                if not blob.name.endswith('/'):  # Skip directories
-                    files.append(f"azure://{container}/{blob.name}")
+                if not blob.name.endswith('/'):  # Skip directory markers
+                    keys.append(blob.name)
+            for key in _group_table_directories(keys):
+                files.append(f"azure://{container}/{key}")
         except Exception as e:
-            print(f"Error listing Azure blobs: {e}")
+            logger.error("Error listing Azure blobs in %s: %s", container, e)
         
         return files
     

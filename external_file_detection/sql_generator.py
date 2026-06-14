@@ -83,15 +83,17 @@ class SQLGenerator:
 
     # Feature availability per platform.
     # Each key maps to a frozenset of platforms that support it.
+    # Features with no supported platforms are represented by an empty frozenset
+    # and handled generically by `_supports` (which returns False for any platform).
     PLATFORM_FEATURES = {
         'create_table': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
             'fabric_sql_db',
         }),
-        'distribution': frozenset({              # DISTRIBUTION clause in CREATE TABLE
-
-        }),
+        # DISTRIBUTION clause in CREATE TABLE — not currently enabled for any
+        # supported platform (reserved for Synapse DW / Fabric Warehouse).
+        'distribution': frozenset(),
         'bulk_insert': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
@@ -99,38 +101,65 @@ class SQLGenerator:
         'openrowset': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
-
             'fabric_sql_db',
         }),
-        'openrowset_format_keyword': frozenset({ # OPENROWSET(BULK ..., FORMAT = ...)
- 'fabric_sql_db',
-        }),
-        'openrowset_bulk_local': frozenset({     # OPENROWSET(BULK '\\path')  local files
+        # OPENROWSET(BULK ..., FORMAT = ...) — cloud platforms only
+        'openrowset_format_keyword': frozenset({'fabric_sql_db'}),
+        # OPENROWSET(BULK '\\path') — local files on on-prem SQL Server
+        'openrowset_bulk_local': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
         }),
-        'openrowset_blob_storage': frozenset({   # OPENROWSET(BULK ..., DATA_SOURCE = blob_ds)
+        # OPENROWSET(BULK ..., DATA_SOURCE = blob_ds)
+        'openrowset_blob_storage': frozenset({
             'azure_sql_db', 'azure_sql_mi',
         }),
+        # CREATE EXTERNAL TABLE (PolyBase / data virtualization). All six
+        # supported platforms expose external tables per the Microsoft
+        # data-virtualization matrix.
         'external_table': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
-
-        }),
-        'copy_into': frozenset(),
-        'credential_setup': frozenset({
-            'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
-
-        }),
-        'json_openjson': frozenset({             # OPENJSON, JSON_VALUE, JSON_QUERY, ISJSON
-            'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
             'fabric_sql_db',
         }),
-        'json_path_exists': frozenset({          # JSON_PATH_EXISTS  (SQL Server 2022+)
+        # Native Parquet support in OPENROWSET / external tables. SQL Server
+        # 2019 required Hadoop and is intentionally excluded.
+        'parquet_native': frozenset({
             'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
             'fabric_sql_db',
         }),
-        'json_object_array': frozenset({         # JSON_OBJECT / JSON_ARRAY  (SQL Server 2022+)
+        # Delta Lake support. SQL Server 2022+/2025 and Azure SQL Database
+        # expose FORMAT = 'DELTA' in OPENROWSET / external tables.
+        'delta': frozenset({
+            'sql_server_2022', 'sql_server_2025',
+            'azure_sql_db',
+        }),
+        # CETAS — CREATE EXTERNAL TABLE AS SELECT. SQL Server 2022+ and
+        # Azure SQL Managed Instance only.
+        'cetas': frozenset({
+            'sql_server_2022', 'sql_server_2025',
+            'azure_sql_mi',
+        }),
+        # COPY INTO — reserved for future Synapse/Fabric warehouse support
+        'copy_into': frozenset(),
+        'credential_setup': frozenset({
+            'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
+            'azure_sql_db', 'azure_sql_mi',
+        }),
+        # OPENJSON, JSON_VALUE, JSON_QUERY, ISJSON
+        'json_openjson': frozenset({
+            'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
+            'azure_sql_db', 'azure_sql_mi',
+            'fabric_sql_db',
+        }),
+        # JSON_PATH_EXISTS (SQL Server 2022+)
+        'json_path_exists': frozenset({
+            'sql_server_2022', 'sql_server_2025',
+            'azure_sql_db', 'azure_sql_mi',
+            'fabric_sql_db',
+        }),
+        # JSON_OBJECT / JSON_ARRAY (SQL Server 2022+)
+        'json_object_array': frozenset({
             'sql_server_2022', 'sql_server_2025',
             'azure_sql_db', 'azure_sql_mi',
             'fabric_sql_db',
@@ -474,16 +503,18 @@ class SQLGenerator:
             ]
 
         elif file_type == 'delta':
+            platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
             lines += [
-                f'-- ---- Delta Lake (Synapse Serverless) ----------------------------------------',
-                f'-- Delta Lake is read via the DELTA format keyword (preview as of 2024)',
+                f'-- ---- Delta Lake  ({platform_label}) --------------------------------',
+                f'-- Delta Lake is supported in SQL Server 2022/2025 and Azure SQL Database',
+                f'-- via FORMAT = \'DELTA\' in OPENROWSET.',
                 f'SELECT TOP 100 *',
                 f'FROM OPENROWSET(',
                 f'    BULK \'{blob_path}\',',
                 f'    FORMAT = \'DELTA\'',
                 f') AS [result];',
                 f'',
-                f'-- Or use the dedicated OPENROWSET syntax for Delta:',
+                f'-- Point BULK at the Delta table root folder (not a single parquet file):',
                 f'SELECT TOP 100 *',
                 f'FROM OPENROWSET(',
                 f'    BULK \'{blob_path.rsplit("/", 1)[0]}/\',',
@@ -655,10 +686,9 @@ class SQLGenerator:
             ]
         elif file_type == 'delta':
             lines += [
-                f'-- SQL Server does not natively read Delta Lake files.',
-                f'-- Options:',
-                f'--   1. Use Azure Synapse Serverless with FORMAT = \'DELTA\'',
-                f'--   2. Convert to Parquet/CSV before loading',
+                f'-- Delta Lake is natively supported on SQL Server 2022/2025 and Azure SQL',
+                f'-- Database via FORMAT = \'DELTA\' in OPENROWSET. See the OPENROWSET tab.',
+                f'-- On other platforms, convert to Parquet or CSV before loading.',
             ]
 
         return '\n'.join(lines)
@@ -745,10 +775,21 @@ class SQLGenerator:
                 f'--   3. Use PolyBase on SQL Server for external Parquet tables',
             ]
         elif file_type == 'delta':
-            lines += [
-                f'-- {platform_label} does not support Delta Lake format.',
-                f'-- Use Azure Synapse Serverless with FORMAT = \'DELTA\' instead.',
-            ]
+            if self._supports('delta', target_platform):
+                lines += [
+                    f'-- ---- Delta Lake via OPENROWSET(BULK) with DATA_SOURCE --------------------',
+                    f'SELECT TOP 100 *',
+                    f'FROM OPENROWSET(',
+                    f'    BULK \'{blob_path}\',',
+                    f'    DATA_SOURCE = \'BlobDS\',',
+                    f'    FORMAT      = \'DELTA\'',
+                    f') AS [result];',
+                ]
+            else:
+                lines += [
+                    f'-- {platform_label} does not support Delta Lake format.',
+                    f'-- Delta Lake is available on SQL Server 2022/2025 and Azure SQL Database only.',
+                ]
 
         return '\n'.join(lines)
 
@@ -1087,7 +1128,17 @@ class SQLGenerator:
             f'-- 3. External Data Source',
             f'CREATE EXTERNAL DATA SOURCE [{data_source}]',
             f'WITH (',
-            f'    TYPE     = HADOOP,                      -- Use BLOB_STORAGE for BULK INSERT with SAS',
+        ]
+
+        # TYPE = HADOOP was the PolyBase-era external data source type. It was
+        # deprecated in SQL Server 2022 and removed. On newer platforms the TYPE
+        # clause is no longer required and should be omitted.
+        if target_platform == 'sql_server_2019':
+            lines.append(
+                f'    TYPE     = HADOOP,                      -- Use BLOB_STORAGE for BULK INSERT with SAS'
+            )
+
+        lines += [
             f'    LOCATION = \'https://<storage_account>.dfs.core.windows.net/<container>\',',
             f'    CREDENTIAL = [cred_{data_source}]',
             f');',
