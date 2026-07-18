@@ -5,7 +5,9 @@ import json
 import csv
 import math
 import logging
+import re
 import threading
+from collections import OrderedDict
 from copy import deepcopy
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
@@ -38,6 +40,10 @@ def _ensure_pyarrow():
 CSV_SAMPLE_SIZE = 4096
 ENCODING_DETECTION_BYTES = 65536
 LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+JSON_FULL_PARSE_MAX_BYTES = 32 * 1024 * 1024
+JSON_SAMPLE_MAX_CHARS = 4 * 1024 * 1024
+JSON_SCHEMA_SAMPLE_ROWS = 200
+CACHE_MAX_ENTRIES = 256
 
 
 def _json_safe(val: Any) -> Any:
@@ -47,6 +53,13 @@ def _json_safe(val: Any) -> Any:
     if isinstance(val, (str, int, float, bool, type(None))):
         return val
     return str(val)
+
+
+def _size_sampled_string(observed_length: int) -> int:
+    """Add headroom so a sampled maximum is not treated as a hard limit."""
+    if observed_length <= 0:
+        return 0
+    return int(math.ceil(observed_length * 1.25))
 
 
 class FileDetector:
@@ -86,19 +99,57 @@ class FileDetector:
         'big5': '950',
     }
 
-    def __init__(self):
+    def __init__(self, cache_max_entries: int = CACHE_MAX_ENTRIES):
         """Initialize the file detector."""
+        if cache_max_entries < 1:
+            raise ValueError('cache_max_entries must be at least 1')
+        self._cache_max_entries = cache_max_entries
         self._cache_lock = threading.Lock()
-        self._encoding_cache: Dict[Tuple[str, float, int], Tuple[str, float]] = {}
-        self._metadata_cache: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
+        self._encoding_cache: OrderedDict = OrderedDict()
+        self._metadata_cache: OrderedDict = OrderedDict()
 
-    def _get_file_signature(self, file_path: str) -> Optional[Tuple[str, float, int]]:
+    def _get_file_signature(self, file_path: str) -> Optional[Tuple[str, int, int]]:
         """Return a cache signature for a file or directory based on path + stat info."""
         try:
             stat = os.stat(file_path)
-            return (os.path.abspath(file_path), stat.st_mtime, stat.st_size)
+            mtime_ns = stat.st_mtime_ns
+            size = stat.st_size
+            if os.path.isdir(file_path):
+                for metadata_dir_name in ('_delta_log', 'metadata'):
+                    metadata_dir = os.path.join(file_path, metadata_dir_name)
+                    if not os.path.isdir(metadata_dir):
+                        continue
+                    for entry in os.scandir(metadata_dir):
+                        if not entry.is_file():
+                            continue
+                        entry_stat = entry.stat()
+                        mtime_ns = max(mtime_ns, entry_stat.st_mtime_ns)
+                        size += entry_stat.st_size
+            return (os.path.abspath(file_path), mtime_ns, size)
         except OSError:
             return None
+
+    @staticmethod
+    def _cache_get(cache: OrderedDict, signature: tuple) -> Any:
+        """Return and promote an LRU cache entry. Caller must hold the cache lock."""
+        if signature not in cache:
+            return None
+        value = cache.pop(signature)
+        cache[signature] = value
+        return value
+
+    def _cache_set(self, cache: OrderedDict, signature: tuple, value: Any) -> None:
+        """Insert an LRU cache entry. Caller must hold the cache lock."""
+        cache.pop(signature, None)
+        cache[signature] = value
+        while len(cache) > self._cache_max_entries:
+            cache.popitem(last=False)
+
+    def clear_caches(self) -> None:
+        """Clear cached encoding and metadata results."""
+        with self._cache_lock:
+            self._encoding_cache.clear()
+            self._metadata_cache.clear()
 
     def is_delta_table_directory(self, directory_path: str) -> bool:
         """Return True if *directory_path* looks like a Delta Lake table folder."""
@@ -113,9 +164,8 @@ class FileDetector:
         metadata_dir = os.path.join(directory_path, 'metadata')
         if not os.path.isdir(metadata_dir):
             return False
-        # Look for any v*.metadata.json file
         import glob
-        return bool(glob.glob(os.path.join(metadata_dir, 'v*.metadata.json')))
+        return bool(glob.glob(os.path.join(metadata_dir, '*.metadata.json')))
 
     # ------------------------------------------------------------------
     # Type detection
@@ -189,8 +239,9 @@ class FileDetector:
         signature = self._get_file_signature(file_path)
         if signature:
             with self._cache_lock:
-                if signature in self._encoding_cache:
-                    return self._encoding_cache[signature]
+                cached = self._cache_get(self._encoding_cache, signature)
+                if cached is not None:
+                    return cached
 
         try:
             import chardet
@@ -202,7 +253,7 @@ class FileDetector:
             detected = (encoding, confidence)
             if signature:
                 with self._cache_lock:
-                    self._encoding_cache[signature] = detected
+                    self._cache_set(self._encoding_cache, signature, detected)
             return detected
         except ImportError:
             pass
@@ -214,14 +265,14 @@ class FileDetector:
                 detected = (enc, 0.5)
                 if signature:
                     with self._cache_lock:
-                        self._encoding_cache[signature] = detected
+                        self._cache_set(self._encoding_cache, signature, detected)
                 return detected
             except (UnicodeDecodeError, LookupError):
                 continue
         detected = ('utf-8', 0.0)
         if signature:
             with self._cache_lock:
-                self._encoding_cache[signature] = detected
+                self._cache_set(self._encoding_cache, signature, detected)
         return detected
 
     def encoding_to_codepage(self, encoding: str) -> str:
@@ -238,8 +289,9 @@ class FileDetector:
         signature = self._get_file_signature(file_path)
         if signature:
             with self._cache_lock:
-                if signature in self._metadata_cache:
-                    return deepcopy(self._metadata_cache[signature])
+                cached = self._cache_get(self._metadata_cache, signature)
+                if cached is not None:
+                    return deepcopy(cached)
 
         file_type = self.detect_file_type(file_path)
         if file_type in ('csv', 'text', 'json'):
@@ -303,7 +355,9 @@ class FileDetector:
 
         if signature:
             with self._cache_lock:
-                self._metadata_cache[signature] = deepcopy(metadata)
+                self._cache_set(
+                    self._metadata_cache, signature, deepcopy(metadata)
+                )
         return metadata
 
     # ------------------------------------------------------------------
@@ -331,34 +385,78 @@ class FileDetector:
             result['delimiter'] = delimiter
             result['has_header'] = has_header
 
-            df = pd.read_csv(file_path, nrows=1000, encoding=encoding,
-                             sep=delimiter, low_memory=False, on_bad_lines='warn')
-            result['schema'] = [(col, str(dtype)) for col, dtype in df.dtypes.items()]
+            df = pd.read_csv(
+                file_path,
+                nrows=1000,
+                encoding=encoding,
+                sep=delimiter,
+                header=0 if has_header else None,
+                low_memory=False,
+                on_bad_lines='warn',
+            )
+            if not has_header:
+                df.columns = [
+                    f'column_{index + 1}' for index in range(len(df.columns))
+                ]
+            else:
+                df.columns = [str(column) for column in df.columns]
+            result['schema'] = [
+                (str(col), str(dtype)) for col, dtype in df.dtypes.items()
+            ]
             result['column_count'] = len(df.columns)
+            result['schema_inference'] = 'sampled'
+            result['schema_sample_size'] = len(df)
+            result['nullability_inference'] = 'conservative'
 
             # Sample max string lengths for smarter SQL type sizing
-            max_lengths: Dict[str, int] = {}
+            observed_lengths: Dict[str, int] = {}
             for col in df.columns:
-                if df[col].dtype == object:
+                if pd.api.types.is_string_dtype(df[col].dtype):
                     max_len = df[col].dropna().astype(str).str.len().max()
-                    max_lengths[col] = int(max_len) if pd.notna(max_len) else 0
-            result['max_string_lengths'] = max_lengths
+                    observed_lengths[str(col)] = (
+                        int(max_len) if pd.notna(max_len) else 0
+                    )
+            result['observed_max_string_lengths'] = observed_lengths
+            result['max_string_lengths'] = {
+                col: _size_sampled_string(length)
+                for col, length in observed_lengths.items()
+            }
 
             try:
                 file_size = os.path.getsize(file_path)
                 if file_size > LARGE_FILE_THRESHOLD:  # estimate row count for large files
-                    with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                    with open(file_path, 'rb') as f:
                         sample_lines = [f.readline() for _ in range(500)]
-                    avg_line = sum(len(l) for l in sample_lines) / max(len(sample_lines), 1)
-                    result['row_count'] = int(file_size / max(avg_line, 1)) - (1 if has_header else 0)
+                    populated_lines = [line for line in sample_lines if line]
+                    avg_line = sum(
+                        len(line) for line in populated_lines
+                    ) / max(len(populated_lines), 1)
+                    result['row_count'] = max(
+                        int(file_size / max(avg_line, 1))
+                        - (1 if has_header else 0),
+                        0,
+                    )
                     result['row_count_estimated'] = True
                 else:
-                    with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                        result['row_count'] = sum(1 for _ in f) - (1 if has_header else 0)
-            except Exception:
+                    with open(
+                        file_path,
+                        'r',
+                        encoding=encoding,
+                        errors='replace',
+                        newline='',
+                    ) as f:
+                        logical_rows = sum(
+                            1 for _ in csv.reader(f, delimiter=delimiter)
+                        )
+                    result['row_count'] = max(
+                        logical_rows - (1 if has_header else 0), 0
+                    )
+                    result['row_count_estimated'] = False
+            except (OSError, UnicodeError, csv.Error):
                 result['row_count'] = len(df)
+                result['row_count_estimated'] = True
 
-            result['nullable_columns'] = [col for col in df.columns if df[col].isnull().any()]
+            result['nullable_columns'] = [str(col) for col in df.columns]
 
             # Store sample rows (first 3) for SQL comment generation
             sample_rows = df.head(3).where(pd.notnull(df.head(3)), None).values.tolist()
@@ -412,17 +510,54 @@ class FileDetector:
                 },
             }
         except Exception as e:
-            _ensure_pandas()
-            try:
-                df = pd.read_parquet(file_path)
-                return {
-                    'schema': [(col, str(dtype)) for col, dtype in df.dtypes.items()],
-                    'row_count': len(df),
-                    'column_count': len(df.columns),
-                    'encoding': 'binary',
-                }
-            except Exception:
-                return {'error': str(e), 'encoding': 'binary'}
+            return {'error': str(e), 'encoding': 'binary'}
+
+    @staticmethod
+    def _first_parquet_file(
+        directory_path: str,
+        data_subdirectory: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the first underlying Parquet file without loading table data."""
+        search_root = (
+            os.path.join(directory_path, data_subdirectory)
+            if data_subdirectory
+            else directory_path
+        )
+        if not os.path.isdir(search_root):
+            return None
+
+        excluded_directories = {
+            '_delta_log',
+            '_change_data',
+            '_symlink_format_manifest',
+        }
+        for root, dirs, files in os.walk(search_root):
+            dirs[:] = sorted(
+                directory
+                for directory in dirs
+                if directory not in excluded_directories
+            )
+            for filename in sorted(files):
+                if filename.lower().endswith('.parquet'):
+                    return os.path.join(root, filename)
+        return None
+
+    def _analyze_table_parquet_fallback(
+        self, file_path: str, warning: str
+    ) -> Dict[str, Any]:
+        """Derive schema from one data file without claiming a table row count."""
+        parquet_file = self._first_parquet_file(file_path)
+        if parquet_file is None:
+            return {
+                'error': 'No underlying Parquet data file found',
+                'warning': warning,
+                'encoding': 'binary',
+            }
+        result = self._analyze_parquet(parquet_file)
+        result['row_count'] = None
+        result['warning'] = warning
+        result['schema_inference'] = 'underlying_parquet_file'
+        return result
 
     def _analyze_delta(self, file_path: str) -> Dict[str, Any]:
         """Analyse a Delta Lake table folder."""
@@ -449,13 +584,12 @@ class FileDetector:
                 # Use pyarrow dataset to count rows without loading data
                 ds = dt.to_pyarrow_dataset()
                 row_count = ds.count_rows()
-            except Exception:
-                try:
-                    # Fallback: read just one column to get num_rows
-                    tbl = dt.to_pyarrow_table(columns=[schema.fields[0].name] if schema.fields else [])
-                    row_count = tbl.num_rows
-                except Exception:
-                    pass
+            except Exception as exc:
+                logger.warning(
+                    "Unable to count rows in Delta table %s: %s",
+                    file_path,
+                    exc,
+                )
 
             return {
                 'schema': fields,
@@ -469,171 +603,405 @@ class FileDetector:
             logger.warning("DeltaTable analysis requires 'deltalake' package. "
                            "Falling back to Parquet analysis for %s. "
                            "Install with: pip install deltalake", file_path)
-            result = self._analyze_parquet(file_path)
-            result['warning'] = 'Delta table support requires: pip install deltalake'
-            return result
+            return self._analyze_table_parquet_fallback(
+                file_path,
+                'Delta table support requires: pip install deltalake',
+            )
         except Exception as e:
-            # Fall back to reading underlying parquet files directly
+            return self._analyze_table_parquet_fallback(
+                file_path,
+                f'Delta log parsing failed ({type(e).__name__}). '
+                'Metadata derived from one underlying Parquet file.',
+            )
+
+    @staticmethod
+    def _iceberg_metadata_version(metadata_file: str) -> Optional[int]:
+        """Extract a numeric version from common Iceberg metadata filenames."""
+        name = os.path.basename(metadata_file)
+        for pattern in (
+            r'^v(\d+)\.metadata\.json$',
+            r'^(\d+)(?:-[^.]+)?\.metadata\.json$',
+        ):
+            match = re.match(pattern, name, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _latest_iceberg_metadata_file(self, table_path: str) -> Optional[str]:
+        """Select current Iceberg metadata by numeric metadata version."""
+        import glob
+
+        metadata_dir = os.path.join(table_path, 'metadata')
+        candidates = glob.glob(
+            os.path.join(metadata_dir, '*.metadata.json')
+        )
+        if not candidates:
+            return None
+
+        versioned = [
+            (version, candidate)
+            for candidate in candidates
+            if (version := self._iceberg_metadata_version(candidate)) is not None
+        ]
+        if versioned:
+            return max(
+                versioned,
+                key=lambda item: (
+                    item[0],
+                    os.path.getmtime(item[1]),
+                    item[1],
+                ),
+            )[1]
+        return max(candidates, key=lambda path: (os.path.getmtime(path), path))
+
+    @staticmethod
+    def _current_iceberg_schema(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the schema identified by current-schema-id."""
+        direct_schema = metadata.get('schema')
+        if isinstance(direct_schema, dict):
+            return direct_schema
+
+        schemas = [
+            schema
+            for schema in metadata.get('schemas', [])
+            if isinstance(schema, dict)
+        ]
+        current_schema_id = metadata.get('current-schema-id')
+        for schema in schemas:
+            if schema.get('schema-id') == current_schema_id:
+                return schema
+        if schemas:
+            return max(
+                schemas,
+                key=lambda schema: schema.get('schema-id', -1),
+            )
+        return {}
+
+    @staticmethod
+    def _current_iceberg_partition_spec(
+        metadata: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Return fields from the default Iceberg partition spec."""
+        direct_spec = metadata.get('partition-spec')
+        if isinstance(direct_spec, list):
+            return direct_spec
+        if isinstance(direct_spec, dict):
+            fields = direct_spec.get('fields', [])
+            return fields if isinstance(fields, list) else []
+
+        specs = [
+            spec
+            for spec in metadata.get('partition-specs', [])
+            if isinstance(spec, dict)
+        ]
+        default_spec_id = metadata.get('default-spec-id')
+        for spec in specs:
+            if spec.get('spec-id') == default_spec_id:
+                fields = spec.get('fields', [])
+                return fields if isinstance(fields, list) else []
+        return []
+
+    @staticmethod
+    def _iceberg_row_count(metadata: Dict[str, Any]) -> Optional[int]:
+        """Read an authoritative row count from the current snapshot summary."""
+        current_snapshot_id = metadata.get('current-snapshot-id')
+        if current_snapshot_id is None:
+            return 0 if 'current-snapshot-id' in metadata else None
+
+        for snapshot in metadata.get('snapshots', []):
+            if not isinstance(snapshot, dict):
+                continue
+            if snapshot.get('snapshot-id') != current_snapshot_id:
+                continue
+            summary = snapshot.get('summary') or {}
+            total_records = summary.get('total-records')
             try:
-                import glob
-                parquet_files = glob.glob(
-                    os.path.join(file_path, '**/*.parquet'), recursive=True
-                )
-                if parquet_files:
-                    result = self._analyze_parquet(parquet_files[0])
-                    result['warning'] = (
-                        f'Delta log parsing failed ({type(e).__name__}). '
-                        f'Metadata derived from underlying parquet files.'
-                    )
-                    return result
-            except Exception:
-                pass
-            return {'error': str(e), 'encoding': 'binary'}
+                return max(int(total_records), 0)
+            except (TypeError, ValueError):
+                return None
+        return None
 
-    def _analyze_iceberg(self, file_path: str) -> Dict[str, Any]:
-        """Analyse an Apache Iceberg table folder by reading its metadata JSON."""
-        import glob as _glob
+    @staticmethod
+    def _iceberg_type(raw_type: Any) -> str:
+        """Map an Iceberg primitive or nested type to the internal type names."""
+        if isinstance(raw_type, dict):
+            nested_type = str(raw_type.get('type', 'string')).lower()
+            if nested_type == 'list':
+                return 'list'
+            if nested_type in ('struct', 'map'):
+                return 'dict'
+            raw_type = nested_type
 
-        # Iceberg type mapping to our internal type names
-        iceberg_type_map = {
-            'boolean': 'bool', 'int': 'int32', 'long': 'int64',
-            'float': 'float32', 'double': 'float64', 'string': 'str',
-            'date': 'date', 'time': 'time', 'timestamp': 'timestamp',
-            'timestamptz': 'timestamp', 'timestamp_ntz': 'timestamp',
-            'binary': 'binary', 'uuid': 'str', 'fixed': 'binary',
+        normalized = str(raw_type).lower()
+        primitive = re.split(r'[\[(]', normalized, maxsplit=1)[0]
+        type_map = {
+            'boolean': 'bool',
+            'int': 'int32',
+            'long': 'int64',
+            'float': 'float32',
+            'double': 'float64',
+            'string': 'str',
+            'date': 'date',
+            'time': 'time',
+            'timestamp': 'timestamp',
+            'timestamptz': 'timestamp',
+            'timestamp_ntz': 'timestamp',
+            'binary': 'binary',
+            'uuid': 'str',
+            'fixed': 'binary',
             'decimal': 'decimal128',
         }
+        return type_map.get(primitive, 'str')
 
+    def _analyze_iceberg(self, file_path: str) -> Dict[str, Any]:
+        """Analyse an Apache Iceberg table folder from current metadata."""
         try:
-            # Find the latest metadata file
-            meta_dir = os.path.join(file_path, 'metadata')
-            meta_files = sorted(_glob.glob(os.path.join(meta_dir, 'v*.metadata.json')))
-            if not meta_files:
-                return {'error': 'No Iceberg metadata file found', 'encoding': 'binary'}
+            metadata_file = self._latest_iceberg_metadata_file(file_path)
+            if metadata_file is None:
+                return {
+                    'error': 'No Iceberg metadata file found',
+                    'encoding': 'binary',
+                }
 
-            with open(meta_files[-1], 'r', encoding='utf-8') as f:
-                meta = json.load(f)
+            with open(metadata_file, 'r', encoding='utf-8') as handle:
+                metadata = json.load(handle)
+            if not isinstance(metadata, dict):
+                raise ValueError('Iceberg metadata root must be a JSON object')
 
-            # Parse schema from Iceberg metadata
-            ice_schema = meta.get('schema') or (meta.get('schemas') or [{}])[-1]
-            fields_raw = ice_schema.get('fields', [])
+            current_schema = self._current_iceberg_schema(metadata)
+            fields = current_schema.get('fields', [])
+            if not isinstance(fields, list):
+                raise ValueError('Iceberg schema fields must be a list')
 
             schema = []
-            nullable_cols = []
-            for field in fields_raw:
-                name = field.get('name', '')
-                raw_type = field.get('type', 'string')
-                if isinstance(raw_type, dict):
-                    raw_type = raw_type.get('type', 'string')
-                internal_type = iceberg_type_map.get(raw_type.lower(), 'str')
-                schema.append((name, internal_type))
+            nullable_columns = []
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                name = str(field.get('name', ''))
+                if not name:
+                    continue
+                schema.append((name, self._iceberg_type(field.get('type'))))
                 if not field.get('required', False):
-                    nullable_cols.append(name)
+                    nullable_columns.append(name)
 
-            iceberg_meta = {
-                'format_version': meta.get('format-version'),
-                'table_uuid': meta.get('table-uuid'),
-                'location': meta.get('location'),
-                'last_updated': meta.get('last-updated-ms'),
-                'partition_spec': meta.get('partition-spec', {}).get('fields', []),
+            iceberg_metadata = {
+                'format_version': metadata.get('format-version'),
+                'table_uuid': metadata.get('table-uuid'),
+                'location': metadata.get('location'),
+                'last_updated': metadata.get('last-updated-ms'),
+                'current_schema_id': metadata.get('current-schema-id'),
+                'default_spec_id': metadata.get('default-spec-id'),
+                'partition_spec': self._current_iceberg_partition_spec(
+                    metadata
+                ),
+                'metadata_file': os.path.basename(metadata_file),
             }
-
-            # Try counting rows from the underlying parquet files
-            row_count = None
-            parquet_files = _glob.glob(
-                os.path.join(file_path, 'data', '*.parquet')
-            )
-            if parquet_files:
-                try:
-                    _ensure_pyarrow()
-                    total = 0
-                    for pf_path in parquet_files:
-                        pf = pq.ParquetFile(pf_path)
-                        total += pf.metadata.num_rows
-                    row_count = total
-                except Exception:
-                    pass
-
             return {
                 'schema': schema,
                 'column_count': len(schema),
-                'row_count': row_count,
-                'nullable_columns': nullable_cols,
-                'iceberg_metadata': iceberg_meta,
+                'row_count': self._iceberg_row_count(metadata),
+                'nullable_columns': nullable_columns,
+                'iceberg_metadata': iceberg_metadata,
+                'schema_inference': 'iceberg_metadata',
                 'encoding': 'binary',
             }
-        except Exception as e:
-            # Fallback: try reading parquet files directly
-            try:
-                parquet_files = _glob.glob(
-                    os.path.join(file_path, 'data', '*.parquet')
-                )
-                if parquet_files:
-                    result = self._analyze_parquet(parquet_files[0])
-                    result['warning'] = (
-                        f'Iceberg metadata parsing failed ({type(e).__name__}). '
-                        f'Metadata derived from underlying parquet files.'
-                    )
-                    return result
-            except Exception:
-                pass
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as e:
             return {'error': str(e), 'encoding': 'binary'}
 
-    def _analyze_json(self, file_path: str, encoding: str = 'utf-8') -> Dict[str, Any]:
-        """Analyse JSON / NDJSON file metadata.
+    @staticmethod
+    def _first_json_character(file_path: str, encoding: str) -> str:
+        """Return the first non-whitespace character from a bounded prefix."""
+        with open(
+            file_path, 'r', encoding=encoding, errors='replace'
+        ) as handle:
+            prefix = handle.read(CSV_SAMPLE_SIZE)
+        stripped = prefix.lstrip('\ufeff \t\r\n')
+        return stripped[0] if stripped else ''
 
-        Detects:
-        - json_format: 'ndjson', 'array', or 'object'
-        - json_nesting: dict mapping column name -> 'scalar', 'object', or 'array'
-        - json_sample_values: dict mapping column name -> first non-null sample value
-        """
+    def _analyze_ndjson_candidate(
+        self,
+        file_path: str,
+        encoding: str,
+        explicit_ndjson: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Stream an NDJSON candidate while retaining only a schema sample."""
+        rows: List[Dict[str, Any]] = []
+        row_count = 0
+        invalid_lines = 0
+        with open(
+            file_path, 'r', encoding=encoding, errors='replace'
+        ) as handle:
+            while True:
+                line = handle.readline(JSON_SAMPLE_MAX_CHARS + 1)
+                if not line:
+                    break
+                if (
+                    len(line) > JSON_SAMPLE_MAX_CHARS
+                    and not line.endswith(('\n', '\r'))
+                ):
+                    return None
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    invalid_lines += 1
+                    if not explicit_ndjson:
+                        return None
+                    continue
+                if not isinstance(value, dict):
+                    return None
+                row_count += 1
+                if len(rows) < JSON_SCHEMA_SAMPLE_ROWS:
+                    rows.append(value)
+
+        if not rows:
+            return None
+        if row_count == 1 and not explicit_ndjson:
+            return self._build_json_result(
+                rows,
+                json_format='object',
+                row_count=1,
+                sampled=False,
+            )
+
+        result = self._build_json_result(
+            rows,
+            json_format='ndjson',
+            row_count=row_count,
+            sampled=row_count > len(rows),
+        )
+        if invalid_lines:
+            result['warning'] = (
+                f'Skipped {invalid_lines} invalid NDJSON '
+                f'line{"s" if invalid_lines != 1 else ""}.'
+            )
+        return result
+
+    @staticmethod
+    def _read_json_array_sample(
+        file_path: str,
+        encoding: str,
+        max_rows: int = JSON_SCHEMA_SAMPLE_ROWS,
+    ) -> List[Dict[str, Any]]:
+        """Decode a bounded prefix of a JSON array without loading the file."""
+        with open(
+            file_path, 'r', encoding=encoding, errors='replace'
+        ) as handle:
+            text = handle.read(JSON_SAMPLE_MAX_CHARS)
+
+        text = text.lstrip('\ufeff \t\r\n')
+        if not text.startswith('['):
+            return []
+
+        decoder = json.JSONDecoder()
+        rows: List[Dict[str, Any]] = []
+        index = 1
+        while len(rows) < max_rows:
+            while index < len(text) and text[index] in ' \t\r\n,':
+                index += 1
+            if index >= len(text) or text[index] == ']':
+                break
+            try:
+                value, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                break
+            if not isinstance(value, dict):
+                return []
+            rows.append(value)
+        return rows
+
+    def _analyze_json(
+        self, file_path: str, encoding: str = 'utf-8'
+    ) -> Dict[str, Any]:
+        """Analyse JSON or NDJSON with bounded in-memory parsing."""
         try:
-            with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                first_char = f.read(1)
-                f.seek(0)
+            first_char = self._first_json_character(file_path, encoding)
+            explicit_ndjson = Path(file_path).suffix.lower() in (
+                '.jsonl',
+                '.ndjson',
+            )
+            if first_char == '{' or explicit_ndjson:
+                ndjson_result = self._analyze_ndjson_candidate(
+                    file_path,
+                    encoding,
+                    explicit_ndjson,
+                )
+                if ndjson_result is not None:
+                    return ndjson_result
 
-                # ---- Try NDJSON (line-delimited JSON) ----
-                if first_char == '{':
-                    rows: list = []
-                    for i, line in enumerate(f):
-                        if i >= 200:
-                            break
-                        line = line.strip()
-                        if line:
-                            try:
-                                rows.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                pass
-                    if rows and isinstance(rows[0], dict):
-                        return self._build_json_result(rows, json_format='ndjson')
+            file_size = os.path.getsize(file_path)
+            if file_size > JSON_FULL_PARSE_MAX_BYTES:
+                if first_char == '[':
+                    rows = self._read_json_array_sample(
+                        file_path,
+                        encoding,
+                    )
+                    if rows:
+                        result = self._build_json_result(
+                            rows,
+                            json_format='array',
+                            row_count=None,
+                            sampled=True,
+                        )
+                        result['analysis_truncated'] = True
+                        result['warning'] = (
+                            'JSON array exceeds the full-parse limit; '
+                            'schema was inferred from a bounded prefix.'
+                        )
+                        return result
+                return {
+                    'error': (
+                        'JSON document exceeds the '
+                        f'{JSON_FULL_PARSE_MAX_BYTES}-byte full-parse limit'
+                    ),
+                    'analysis_truncated': True,
+                }
 
-                # ---- Full parse ----
-                f.seek(0)
-                data = json.load(f)
+            with open(
+                file_path, 'r', encoding=encoding, errors='replace'
+            ) as handle:
+                data = json.load(handle)
 
-            if isinstance(data, list) and data:
-                first = data[0]
-                if isinstance(first, dict):
-                    return self._build_json_result(data, json_format='array')
+            if isinstance(data, list):
+                object_rows = [
+                    value for value in data[:JSON_SCHEMA_SAMPLE_ROWS]
+                    if isinstance(value, dict)
+                ]
+                if object_rows:
+                    return self._build_json_result(
+                        object_rows,
+                        json_format='array',
+                        row_count=len(data),
+                        sampled=len(data) > len(object_rows),
+                    )
             elif isinstance(data, dict):
-                return self._build_json_result([data], json_format='object')
+                return self._build_json_result(
+                    [data],
+                    json_format='object',
+                    row_count=1,
+                    sampled=False,
+                )
             return {}
-        except Exception as e:
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as e:
             return {'error': str(e)}
 
     # --- JSON helper ------------------------------------------------
 
     @staticmethod
-    def _build_json_result(rows: list, json_format: str) -> Dict[str, Any]:
+    def _build_json_result(
+        rows: List[Dict[str, Any]],
+        json_format: str,
+        row_count: Optional[int] = None,
+        sampled: bool = False,
+    ) -> Dict[str, Any]:
         """Build rich JSON metadata from a list of row-dicts.
 
         Walks one level deep to classify each field as scalar / object / array
-        and records sample values for SQL generation.
-
-        Scans ALL rows to discover the full set of keys (NDJSON files may
-        have different fields per line).
+        and records bounded sample values for SQL generation.
         """
-        # Collect all unique keys in order of first appearance across all rows
         all_keys: Dict[str, None] = {}
         for row in rows:
             for key in row:
@@ -643,20 +1011,13 @@ class FileDetector:
         schema: List[tuple] = []
         nesting: Dict[str, str] = {}
         sample_values: Dict[str, Any] = {}
-        nullable_columns: List[str] = []
+        observed_lengths: Dict[str, int] = {}
 
         for key in all_keys:
-            # Find first non-null value for this key across all rows
             effective_val = None
-            missing_count = 0
             for r in rows:
-                if key not in r or r[key] is None:
-                    missing_count += 1
-                elif effective_val is None:
+                if key in r and r[key] is not None and effective_val is None:
                     effective_val = r[key]
-
-            if missing_count > 0:
-                nullable_columns.append(key)
 
             if isinstance(effective_val, dict):
                 nesting[key] = 'object'
@@ -667,18 +1028,33 @@ class FileDetector:
             else:
                 nesting[key] = 'scalar'
                 schema.append((key, type(effective_val).__name__ if effective_val is not None else 'str'))
+                string_lengths = [
+                    len(value)
+                    for row in rows
+                    if isinstance((value := row.get(key)), str)
+                ]
+                if string_lengths:
+                    observed_lengths[key] = max(string_lengths)
 
             sample_values[key] = effective_val
 
         return {
             'schema': schema,
-            'row_count': len(rows),
+            'row_count': len(rows) if row_count is None and not sampled else row_count,
             'column_count': len(schema),
             'has_header': True,
             'json_format': json_format,
             'json_nesting': nesting,
             'json_sample_values': {k: _json_safe(v) for k, v in sample_values.items()},
-            'nullable_columns': nullable_columns,
+            'nullable_columns': list(all_keys),
+            'nullability_inference': 'conservative',
+            'schema_inference': 'sampled' if sampled else 'full',
+            'schema_sample_size': len(rows),
+            'observed_max_string_lengths': observed_lengths,
+            'max_string_lengths': {
+                key: _size_sampled_string(length)
+                for key, length in observed_lengths.items()
+            },
         }
 
 
@@ -686,9 +1062,9 @@ class FileDetector:
         """Analyse plain text file metadata."""
         try:
             with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                lines = f.readlines()
-            return {'row_count': len(lines)}
-        except Exception as e:
+                row_count = sum(1 for _ in f)
+            return {'row_count': row_count}
+        except (OSError, UnicodeError) as e:
             return {'error': str(e)}
 
     def _analyze_excel(self, file_path: str) -> Dict[str, Any]:
@@ -704,25 +1080,30 @@ class FileDetector:
                 df = pd.read_excel(file_path, nrows=200)
 
             schema = []
-            nullable_cols = []
-            max_lengths: Dict[str, int] = {}
+            observed_lengths: Dict[str, int] = {}
             for col in df.columns:
                 dtype = str(df[col].dtype)
-                if df[col].isnull().any():
-                    nullable_cols.append(str(col))
-                if dtype == 'object':
+                if pd.api.types.is_string_dtype(df[col].dtype):
                     lengths = df[col].dropna().astype(str).str.len()
                     if len(lengths) > 0:
-                        max_lengths[str(col)] = int(lengths.max())
+                        observed_lengths[str(col)] = int(lengths.max())
                 schema.append((str(col), dtype))
 
             return {
                 'schema': schema,
-                'nullable_columns': nullable_cols,
-                'max_string_lengths': max_lengths,
-                'row_count': len(df),
+                'nullable_columns': [str(col) for col in df.columns],
+                'nullability_inference': 'conservative',
+                'observed_max_string_lengths': observed_lengths,
+                'max_string_lengths': {
+                    col: _size_sampled_string(length)
+                    for col, length in observed_lengths.items()
+                },
+                'row_count': len(df) if len(df) < 200 else None,
+                'row_count_lower_bound': 200 if len(df) == 200 else None,
                 'column_count': len(schema),
                 'has_header': True,
+                'schema_inference': 'sampled',
+                'schema_sample_size': len(df),
                 'sample_rows': [[_json_safe(v) for v in row] for row in df.head(3).where(pd.notnull(df.head(3)), None).values.tolist()],
             }
         except Exception as e:
@@ -732,10 +1113,21 @@ class FileDetector:
     # Preview data (tabular)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parquet_preview_frame(file_path: str, max_rows: int):
+        """Read at most one bounded Parquet record batch."""
+        parquet_file = pq.ParquetFile(file_path)
+        batch = next(
+            parquet_file.iter_batches(batch_size=max_rows),
+            None,
+        )
+        if batch is None:
+            return pd.DataFrame(columns=parquet_file.schema_arrow.names)
+        return batch.to_pandas()
+
     def get_preview_data(self, file_path: str, max_rows: int = 100) -> Dict[str, Any]:
         """Return a tabular preview of the file as columns + rows."""
-        # Cap max_rows to prevent memory exhaustion
-        max_rows = min(max_rows, 10000)
+        max_rows = max(1, min(int(max_rows), 10000))
         _ensure_pandas()
         _ensure_pyarrow()
         file_type = self.detect_file_type(file_path)
@@ -751,13 +1143,7 @@ class FileDetector:
                                  sep=delimiter, low_memory=False, on_bad_lines='skip')
 
             elif file_type == 'parquet':
-                pf = pq.ParquetFile(file_path)
-                # Read only the first row group instead of entire file
-                if pf.metadata.num_row_groups > 0:
-                    table = pf.read_row_group(0)
-                    df = table.slice(0, max_rows).to_pandas()
-                else:
-                    df = pf.read().slice(0, max_rows).to_pandas()
+                df = self._parquet_preview_frame(file_path, max_rows)
 
             elif file_type == 'delta':
                 try:
@@ -767,23 +1153,25 @@ class FileDetector:
                     ds = dt.to_pyarrow_dataset()
                     df = ds.scanner().head(max_rows).to_pandas()
                 except ImportError:
-                    pf = pq.ParquetFile(file_path)
-                    if pf.metadata.num_row_groups > 0:
-                        df = pf.read_row_group(0).slice(0, max_rows).to_pandas()
-                    else:
-                        df = pf.read().slice(0, max_rows).to_pandas()
+                    parquet_file = self._first_parquet_file(file_path)
+                    if parquet_file is None:
+                        raise FileNotFoundError(
+                            'No underlying Parquet data file found'
+                        )
+                    df = self._parquet_preview_frame(
+                        parquet_file, max_rows
+                    )
 
             elif file_type == 'iceberg':
-                import glob as _glob
-                pq_files = sorted(_glob.glob(os.path.join(file_path, 'data', '*.parquet')))
-                if pq_files:
-                    pf = pq.ParquetFile(pq_files[0])
-                    if pf.metadata.num_row_groups > 0:
-                        df = pf.read_row_group(0).slice(0, max_rows).to_pandas()
-                    else:
-                        df = pf.read().slice(0, max_rows).to_pandas()
-                else:
+                parquet_file = self._first_parquet_file(
+                    file_path, data_subdirectory='data'
+                )
+                if parquet_file is None:
                     df = pd.DataFrame()
+                else:
+                    df = self._parquet_preview_frame(
+                        parquet_file, max_rows
+                    )
 
             elif file_type == 'json':
                 # Try NDJSON first (line-delimited JSON: each line is a JSON object)
@@ -793,9 +1181,17 @@ class FileDetector:
                     if first_char == '{':
                         f.seek(0)
                         rows = []
-                        for i, line in enumerate(f):
-                            if i >= max_rows:
+                        while len(rows) < max_rows:
+                            line = f.readline(JSON_SAMPLE_MAX_CHARS + 1)
+                            if not line:
                                 break
+                            if (
+                                len(line) > JSON_SAMPLE_MAX_CHARS
+                                and not line.endswith(('\n', '\r'))
+                            ):
+                                raise ValueError(
+                                    'JSON line exceeds the preview parse limit'
+                                )
                             line = line.strip()
                             if line:
                                 try:
@@ -807,12 +1203,24 @@ class FileDetector:
                             is_ndjson = True
 
                 if not is_ndjson:
-                    with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                        data = json.load(f)
-                    if isinstance(data, list):
-                        df = pd.DataFrame(data[:max_rows])
+                    if os.path.getsize(file_path) > JSON_FULL_PARSE_MAX_BYTES:
+                        data = self._read_json_array_sample(
+                            file_path,
+                            encoding,
+                            max_rows=max_rows,
+                        )
+                        if not data:
+                            raise ValueError(
+                                'JSON document exceeds the preview parse limit'
+                            )
+                        df = pd.DataFrame(data)
                     else:
-                        df = pd.DataFrame([data])
+                        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                            data = json.load(f)
+                        if isinstance(data, list):
+                            df = pd.DataFrame(data[:max_rows])
+                        else:
+                            df = pd.DataFrame([data])
 
             elif file_type == 'excel':
                 try:
@@ -849,7 +1257,8 @@ class FileDetector:
                 'columns': columns,
                 'rows': safe_rows,
                 'total_rows': meta.get('row_count'),
-                'truncated': (meta.get('row_count') or 0) > max_rows,
+                'truncated': bool(meta.get('analysis_truncated'))
+                or (meta.get('row_count') or 0) > max_rows,
             }
 
         except Exception as e:
@@ -867,9 +1276,23 @@ class FileDetector:
 
     def scan_directory(self, directory_path: str) -> List[Dict[str, Any]]:
         """Scan a directory recursively for supported files."""
+        if not os.path.isdir(directory_path):
+            raise NotADirectoryError(
+                f'Directory does not exist: {directory_path}'
+            )
+        if (
+            self.is_delta_table_directory(directory_path)
+            or self.is_iceberg_table_directory(directory_path)
+        ):
+            return [self.analyze_file_metadata(directory_path)]
+
         results = []
         for root, dirs, files in os.walk(directory_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            dirs[:] = sorted(
+                d
+                for d in dirs
+                if not d.startswith('.') and d != '__pycache__'
+            )
 
             # Recognize Delta table folders once at the directory level and avoid
             # descending into their internals as separate file entries.
@@ -895,7 +1318,7 @@ class FileDetector:
 
             dirs[:] = remaining_dirs
 
-            for file in files:
+            for file in sorted(files):
                 file_path = os.path.join(root, file)
                 file_type = self.detect_file_type(file_path)
                 if file_type != 'unknown':

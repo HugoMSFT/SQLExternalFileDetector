@@ -5,40 +5,45 @@
   "last-sequence-number": 1,
   "last-updated-ms": 1760000000000,
   "last-column-id": 4,
-  "schema": {
-    "type": "struct",
-    "schema-id": 0,
-    "fields": [
-      {
-        "id": 1,
-        "name": "txn_id",
-        "required": true,
-        "type": "string"
-      },
-      {
-        "id": 2,
-        "name": "store",
-        "required": false,
-        "type": "string"
-      },
-      {
-        "id": 3,
-        "name": "amount",
-        "required": false,
-        "type": "double"
-      },
-      {
-        "id": 4,
-        "name": "txn_date",
-        "required": false,
-        "type": "date"
-      }
-    ]
-  },
-  "partition-spec": {
-    "spec-id": 0,
-    "fields": []
-  },
+  "current-schema-id": 0,
+  "schemas": [
+    {
+      "type": "struct",
+      "schema-id": 0,
+      "fields": [
+        {
+          "id": 1,
+          "name": "txn_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "id": 2,
+          "name": "store",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "id": 3,
+          "name": "amount",
+          "required": false,
+          "type": "double"
+        },
+        {
+          "id": 4,
+          "name": "txn_date",
+          "required": false,
+          "type": "date"
+        }
+      ]
+    }
+  ],
+  "partition-specs": [
+    {
+      "spec-id": 0,
+      "fields": []
+    }
+  ],
   "sort-orders": [
     {
       "order-id": 0,

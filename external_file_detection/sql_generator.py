@@ -17,10 +17,7 @@ class ExternalFileFormatConfig:
     encoding: str = 'UTF8'
     first_row: int = 1
     data_compression: Optional[str] = None
-    row_terminator: Optional[str] = None
-    serialization_encoding: Optional[str] = None
-    serializer_method: Optional[str] = None
-    deserializer_method: Optional[str] = None
+    serde_method: Optional[str] = None
 
 
 class SQLGenerator:
@@ -115,7 +112,6 @@ class SQLGenerator:
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
 
         }),
-        'copy_into': frozenset(),
         'credential_setup': frozenset({
             'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
 
@@ -152,6 +148,27 @@ class SQLGenerator:
         'fabric_sql_db': 'Microsoft Fabric SQL Database',
     }
 
+    # CREATE EXTERNAL FILE FORMAT availability differs by SQL product and
+    # format. JSON is only supported by Azure SQL Edge, which is not one of the
+    # targets exposed by this application.
+    EXTERNAL_FORMAT_PLATFORMS = {
+        'DELIMITEDTEXT': frozenset(PLATFORMS),
+        'PARQUET': frozenset(PLATFORMS),
+        'DELTA': frozenset({
+            'sql_server_2022', 'sql_server_2025', 'azure_sql_db',
+        }),
+        'ORC': frozenset({'sql_server_2019'}),
+        'RCFILE': frozenset({'sql_server_2019'}),
+        'JSON': frozenset(),
+    }
+
+    COMPRESSION_CODECS = {
+        'SNAPPY': 'org.apache.hadoop.io.compress.SnappyCodec',
+        'GZIP': 'org.apache.hadoop.io.compress.GzipCodec',
+        'GZ': 'org.apache.hadoop.io.compress.GzipCodec',
+        'DEFAULT': 'org.apache.hadoop.io.compress.DefaultCodec',
+    }
+
     def _supports(self, feature: str, platform: str) -> bool:
         """Return True if *platform* supports *feature*."""
         return platform in self.PLATFORM_FEATURES.get(feature, frozenset())
@@ -163,12 +180,12 @@ class SQLGenerator:
         label = self.PLATFORM_LABELS.get(platform, platform)
         lines = [
             f'-- ====================================================================',
-            f'-- {feature_label}',
-            f'-- NOT AVAILABLE on {label}',
+            f'-- {_sql_comment(feature_label)}',
+            f'-- NOT AVAILABLE on {_sql_comment(label)}',
             f'-- ====================================================================',
         ]
         if alternatives:
-            lines.append(f'-- {alternatives}')
+            lines.append(f'-- {_sql_comment(alternatives)}')
         return '\n'.join(lines)
 
     # ------------------------------------------------------------------
@@ -212,8 +229,8 @@ class SQLGenerator:
         lines = [
             f'-- ====================================================================',
             f'-- CREATE TABLE',
-            f'-- Source : {file_name}  ({file_type})',
-            f'-- Target : {platform_label}',
+            f'-- Source : {_sql_comment(file_name)}  ({_sql_comment(file_type)})',
+            f'-- Target : {_sql_comment(platform_label)}',
             f'-- ====================================================================',
             f'',
             f'CREATE TABLE [{schema_name}].[{table_name}]',
@@ -248,10 +265,10 @@ class SQLGenerator:
             '-- ====================================================================',
             '-- QUICK LOAD: INSERT INTO from OPENROWSET  (uncomment & customise)',
             '-- ====================================================================',
-            f'-- INSERT INTO [{schema_name}].[{table_name}]',
+            f'-- INSERT INTO [{_sql_comment(schema_name)}].[{_sql_comment(table_name)}]',
             f'-- SELECT *',
             f'-- FROM OPENROWSET(',
-            f'--     BULK \'{blob_path}\',',
+            f'--     BULK \'{_sql_comment(blob_path)}\',',
             f'--     FORMAT = \'{format_kw}\'',
             f'-- ) AS src;',
         ]
@@ -305,7 +322,7 @@ class SQLGenerator:
                     f"    FORMAT = '{_format_keyword(metadata.get('file_type', 'csv'))}'",
                     ') AS src;',
                     '',
-                    f'-- Detected source type: {detected_type}',
+                    f'-- Detected source type: {_sql_comment(detected_type)}',
                     '-- For JSON payloads, combine OPENROWSET with OPENJSON (see JSON Functions tab).',
                 ])
 
@@ -337,7 +354,8 @@ class SQLGenerator:
         if file_type not in ('csv', 'text'):
             return (
                 f'-- BULK INSERT is designed for delimited text / CSV files.\n'
-                f'-- This file is {file_type.upper()} — use OPENROWSET or CREATE EXTERNAL TABLE instead.\n'
+                f'-- This file is {_sql_comment(file_type.upper())} — '
+                f'use OPENROWSET or CREATE EXTERNAL TABLE instead.\n'
             )
 
         delimiter = metadata.get('delimiter', ',') or ','
@@ -357,12 +375,14 @@ class SQLGenerator:
         lines = [
             f'-- ====================================================================',
             f'-- BULK INSERT',
-            f'-- Source    : {metadata.get("file_name", file_path)}',
-            f'-- Encoding  : {encoding.upper()}  (codepage {codepage})',
-            f'-- Delimiter : {delim_name}  (\\"{delim_escaped}\\")',
-            f'-- Target   : {platform_label}',
-            f'-- Use for   : {use_for_note}',
-            f'-- Prereq    : {prereq_note}',
+            f'-- Source    : {_sql_comment(metadata.get("file_name", file_path))}',
+            f'-- Encoding  : {_sql_comment(encoding.upper())}  '
+            f'(codepage {_sql_comment(codepage)})',
+            f'-- Delimiter : {_sql_comment(delim_name)}  '
+            f'(\\"{_sql_comment(delim_escaped)}\\")',
+            f'-- Target   : {_sql_comment(platform_label)}',
+            f'-- Use for   : {_sql_comment(use_for_note)}',
+            f'-- Prereq    : {_sql_comment(prereq_note)}',
             f'-- ====================================================================',
             f'',
             f'-- Step 1: Create the target table (see CREATE TABLE tab)',
@@ -376,7 +396,8 @@ class SQLGenerator:
             f'    FIRSTROW        = {first_row},',
             f'    FIELDTERMINATOR = \'{delim_escaped}\',',
             f'    ROWTERMINATOR   = \'0x0a\',        -- LF  (use \'\\r\\n\' for Windows line endings)',
-            f'    CODEPAGE        = \'{codepage}\',  -- {encoding.upper()}',
+            f'    CODEPAGE        = \'{_quote_literal(codepage)}\',  '
+            f'-- {_sql_comment(encoding.upper())}',
             f'    TABLOCK,                            -- Minimally logged; remove if concurrent inserts needed',
             f'    MAXERRORS       = 0,               -- Fail on first error; increase for tolerant loads',
             f'    BATCHSIZE       = 50000            -- Tune per available memory',
@@ -430,8 +451,9 @@ class SQLGenerator:
         lines = [
             f'-- ====================================================================',
             f'-- OPENROWSET',
-            f'-- Source  : {file_name}  ({file_type.upper()})',
-            f'-- Target  : {platform_label}',
+            f'-- Source  : {_sql_comment(file_name)}  '
+            f'({_sql_comment(file_type.upper())})',
+            f'-- Target  : {_sql_comment(platform_label)}',
             f'-- Use for : Ad-hoc / exploratory queries without creating a table',
             f'-- ====================================================================',
             f'',
@@ -505,7 +527,7 @@ class SQLGenerator:
             # Build JSON_VALUE / JSON_QUERY column list from real schema
             jv_cols = []
             for col_name, col_type in schema:
-                clean = _clean_identifier(col_name)
+                clean = _escape_identifier(col_name)
                 kind = nesting.get(col_name, 'scalar')
                 if kind == 'object':
                     jv_cols.append(f'    JSON_QUERY(doc, \'{_quote_json_path(col_name)}\') AS [{clean}]')
@@ -575,7 +597,8 @@ class SQLGenerator:
                 f'    HEADER_ROW      = {"TRUE" if has_header else "FALSE"},',
                 f'    FIELDTERMINATOR = \'{delim_escaped}\',',
                 f'    ROWTERMINATOR   = \'\\n\',',
-                f'    CODEPAGE        = \'{codepage}\'  -- {encoding.upper()}',
+                f'    CODEPAGE        = \'{_quote_literal(codepage)}\'  '
+                f'-- {_sql_comment(encoding.upper())}',
                 f') AS [result];',
                 f'',
                 f'-- ---- CSV with explicit schema (SQL Server PolyBase / Synapse) ---------------',
@@ -586,7 +609,7 @@ class SQLGenerator:
                 f'    FIRSTROW        = {2 if has_header else 1},',
                 f'    FIELDTERMINATOR = \'{delim_escaped}\',',
                 f'    ROWTERMINATOR   = \'\\n\',',
-                f'    CODEPAGE        = \'{codepage}\'',
+                f'    CODEPAGE        = \'{_quote_literal(codepage)}\'',
                 f') WITH (',
             ]
             cols = self._generate_column_definitions(metadata, indent=4)
@@ -625,7 +648,8 @@ class SQLGenerator:
                 f'FROM OPENROWSET(',
                 f'    BULK N\'{local_path}\',',
                 f'    FORMATFILE = N\'<path_to_format_file.xml>\',',
-                f'    CODEPAGE   = \'{codepage}\',  -- {encoding.upper()}',
+                f'    CODEPAGE   = \'{_quote_literal(codepage)}\',  '
+                f'-- {_sql_comment(encoding.upper())}',
                 f'    FIRSTROW   = {2 if has_header else 1}',
                 f') AS [result];',
                 f'',
@@ -684,7 +708,7 @@ class SQLGenerator:
 
         lines += [
             f'-- Prerequisite: Create an EXTERNAL DATA SOURCE of type BLOB_STORAGE.',
-            f'-- This allows {platform_label} to read files from Azure Blob Storage.',
+            f'-- This allows {_sql_comment(platform_label)} to read files from Azure Blob Storage.',
             f'--',
             f'-- CREATE MASTER KEY ENCRYPTION BY PASSWORD = \'<strong_password>\';',
             f'--',
@@ -744,7 +768,7 @@ class SQLGenerator:
                 lines.append(f';')
         elif file_type == 'parquet':
             lines += [
-                f'-- {platform_label} does not natively support Parquet via OPENROWSET.',
+                f'-- {_sql_comment(platform_label)} does not natively support Parquet via OPENROWSET.',
                 f'-- Options:',
                 f'--   1. Convert Parquet to CSV (e.g., pandas, Azure Data Factory)',
                 f'--   2. Use Azure Synapse Serverless for direct Parquet queries',
@@ -752,7 +776,7 @@ class SQLGenerator:
             ]
         elif file_type == 'delta':
             lines += [
-                f'-- {platform_label} does not support Delta Lake format.',
+                f'-- {_sql_comment(platform_label)} does not support Delta Lake format.',
                 f'-- Use Azure Synapse Serverless with FORMAT = \'DELTA\' instead.',
             ]
 
@@ -779,36 +803,69 @@ class SQLGenerator:
         format_name = _escape_identifier(format_name)
 
         config = self._determine_format_config(metadata)
-        format_options = [f'    FORMAT_TYPE = {config.format_type}']
+        supported_platforms = self.EXTERNAL_FORMAT_PLATFORMS.get(
+            config.format_type, frozenset()
+        )
+        if target_platform not in supported_platforms:
+            alternative = (
+                'Use OPENROWSET with OPENJSON for JSON input.'
+                if config.format_type == 'JSON'
+                else 'Choose a file format supported by the selected platform.'
+            )
+            return self._not_supported_message(
+                f'CREATE EXTERNAL FILE FORMAT ({config.format_type})',
+                target_platform,
+                alternative,
+            )
 
-        if config.field_terminator:
-            format_options.append(f'    FIELD_TERMINATOR = \'{_quote_literal(config.field_terminator)}\'')
-        if config.string_delimiter:
-            format_options.append(f'    STRING_DELIMITER = \'{_quote_literal(config.string_delimiter)}\'')
-        if config.date_format:
-            format_options.append(f'    DATE_FORMAT = \'{_quote_literal(config.date_format)}\'')
-        if config.use_type_default:
-            format_options.append(f'    USE_TYPE_DEFAULT = TRUE')
-        if config.encoding and config.encoding != 'UTF8':
-            format_options.append(f'    ENCODING = \'{_quote_literal(config.encoding)}\'')
-        if config.first_row != 1:
-            format_options.append(f'    FIRST_ROW = {config.first_row}')
+        with_options = [f'    FORMAT_TYPE = {config.format_type}']
+
+        if config.format_type == 'DELIMITEDTEXT':
+            delimited_options = []
+            if config.field_terminator:
+                delimited_options.append(
+                    f'        FIELD_TERMINATOR = '
+                    f'\'{_quote_literal(config.field_terminator)}\''
+                )
+            if config.string_delimiter:
+                delimited_options.append(
+                    f'        STRING_DELIMITER = '
+                    f'\'{_quote_literal(config.string_delimiter)}\''
+                )
+            if config.date_format:
+                delimited_options.append(
+                    f'        DATE_FORMAT = \'{_quote_literal(config.date_format)}\''
+                )
+            if config.use_type_default:
+                delimited_options.append('        USE_TYPE_DEFAULT = TRUE')
+            if config.encoding:
+                delimited_options.append(
+                    f'        ENCODING = \'{_quote_literal(config.encoding)}\''
+                )
+            if config.first_row != 1:
+                delimited_options.append(f'        FIRST_ROW = {config.first_row}')
+            if delimited_options:
+                with_options.append(
+                    '    FORMAT_OPTIONS (\n'
+                    + ',\n'.join(delimited_options)
+                    + '\n    )'
+                )
+
+        if config.serde_method:
+            with_options.append(
+                f'    SERDE_METHOD = \'{_quote_literal(config.serde_method)}\''
+            )
         if config.data_compression:
-            format_options.append(f'    DATA_COMPRESSION = \'{_quote_literal(config.data_compression)}\'')
-        if config.row_terminator:
-            format_options.append(f'    ROW_TERMINATOR = \'{_quote_literal(config.row_terminator)}\'')
-        if config.serialization_encoding:
-            format_options.append(f'    SERIALIZATION_ENCODING = \'{_quote_literal(config.serialization_encoding)}\'')
-        if config.serializer_method:
-            format_options.append(f'    SERIALIZER_METHOD = \'{_quote_literal(config.serializer_method)}\'')
-        if config.deserializer_method:
-            format_options.append(f'    DESERIALIZER_METHOD = \'{_quote_literal(config.deserializer_method)}\'')
+            with_options.append(
+                f'    DATA_COMPRESSION = '
+                f'\'{_quote_literal(config.data_compression)}\''
+            )
 
         sql_parts = [
             f'-- CREATE EXTERNAL FILE FORMAT  (PolyBase / Synapse Dedicated or Serverless)',
             f'CREATE EXTERNAL FILE FORMAT [{format_name}]',
             f'WITH (',
-            ',\n'.join(format_options),
+            ',\n'.join(with_options),
             f');',
         ]
         return '\n'.join(sql_parts)
@@ -870,6 +927,21 @@ class SQLGenerator:
                 'CREATE EXTERNAL TABLE', target_platform,
                 f'Alternative: {alt_text}')
 
+        config = self._determine_format_config(metadata)
+        if target_platform not in self.EXTERNAL_FORMAT_PLATFORMS.get(
+            config.format_type, frozenset()
+        ):
+            alternative = (
+                'Use OPENROWSET with OPENJSON for JSON input.'
+                if config.format_type == 'JSON'
+                else 'Choose a file format supported by the selected platform.'
+            )
+            return self._not_supported_message(
+                f'CREATE EXTERNAL TABLE ({config.format_type})',
+                target_platform,
+                alternative,
+            )
+
         if not table_name:
             base = os.path.splitext(os.path.basename(metadata['file_path']))[0]
             table_name = f'ext_{_clean_identifier(base)}'
@@ -880,16 +952,14 @@ class SQLGenerator:
         table_name = _escape_identifier(table_name)
         schema_name = _escape_identifier(schema_name)
         file_format = _escape_identifier(file_format)
-        if data_source:
-            data_source = _escape_identifier(data_source)
+        data_source = _escape_identifier(data_source or 'MyDataSource')
 
         columns = self._generate_column_definitions(metadata, include_nullability=False)
         if not columns:
             columns = ['    [data] NVARCHAR(MAX)']
 
         with_options = []
-        if data_source:
-            with_options.append(f'    DATA_SOURCE = [{data_source}]')
+        with_options.append(f'    DATA_SOURCE = [{data_source}]')
         with_options.append(f'    LOCATION = \'{_quote_literal(location)}\'')
         with_options.append(f'    FILE_FORMAT = [{file_format}]')
         with_options.append(f'    REJECT_TYPE = VALUE')
@@ -898,7 +968,7 @@ class SQLGenerator:
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         sql_parts = [
             f'-- ====================================================================',
-            f'-- CREATE EXTERNAL TABLE  ({platform_label})',
+            f'-- CREATE EXTERNAL TABLE  ({_sql_comment(platform_label)})',
             f'-- Prereq: CREATE EXTERNAL DATA SOURCE and CREATE EXTERNAL FILE FORMAT',
             f'-- ====================================================================',
             f'',
@@ -922,125 +992,40 @@ class SQLGenerator:
                            schema_name: str = 'dbo',
                            storage_url: str = None,
                            target_platform: str = 'sql_server_2022') -> str:
-        """Generate a COPY INTO statement (Synapse Dedicated Pool / Fabric DW)."""
+        """Explain COPY INTO availability for the exposed SQL targets."""
         if target_platform not in self.PLATFORMS:
             target_platform = 'sql_server_2022'
 
-        if not self._supports('copy_into', target_platform):
-            if target_platform in {
-                'sql_server_2019', 'sql_server_2022', 'sql_server_2025',
-                'azure_sql_db', 'azure_sql_mi', 'fabric_sql_db'
-            }:
-                platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
-                lines = [
-                    '-- ====================================================================',
-                    '-- COPY INTO',
-                    f'-- NOT AVAILABLE on {platform_label}',
-                    '-- ====================================================================',
-                    '-- Recommended alternatives:',
-                ]
-                if self._supports('bulk_insert', target_platform):
-                    lines.append('-- 1. BULK INSERT for high-speed CSV/text ingestion (see BULK INSERT tab).')
-                if self._supports('openrowset', target_platform):
-                    lines += [
-                        '-- 2. OPENROWSET for ad-hoc reads and ELT patterns (see OPENROWSET tab).',
-                        '--    Use SELECT INTO or INSERT INTO ... SELECT FROM OPENROWSET for loading.',
-                    ]
-                if self._supports('json_openjson', target_platform):
-                    lines.append('-- 3. OPENJSON / JSON_VALUE for JSON ingestion (see JSON Functions tab).')
-                if target_platform == 'fabric_sql_db':
-                    lines.append('-- 4. Fabric Data Pipelines / Dataflows Gen2 for orchestrated ingestion.')
-                return '\n'.join(lines)
-
-            alts = []
-            if self._supports('bulk_insert', target_platform):
-                alts.append('BULK INSERT (see BULK INSERT tab)')
-            if self._supports('openrowset', target_platform):
-                alts.append('OPENROWSET (see OPENROWSET tab)')
-            if self._supports('external_table', target_platform):
-                alts.append('CREATE EXTERNAL TABLE (see EXT TABLE tab)')
-            alt_text = ', '.join(alts) if alts else 'Use the appropriate data loading method.'
-            return self._not_supported_message(
-                'COPY INTO', target_platform,
-                f'Alternative: {alt_text}')
-
-        if not table_name:
-            base = os.path.splitext(os.path.basename(metadata['file_path']))[0]
-            table_name = _clean_identifier(base)
-        table_name = _escape_identifier(table_name)
-        schema_name = _escape_identifier(schema_name)
-
-        file_type = metadata.get('file_type', 'csv')
-        file_name = metadata.get('file_name', metadata['file_path'])
-        encoding = metadata.get('encoding', 'utf-8') or 'utf-8'
-        delimiter = metadata.get('delimiter', ',') or ','
-        has_header = metadata.get('has_header', True)
-        delim_escaped = _quote_literal(delimiter.replace('\t', '\\t'))
-        blob_path = _quote_literal(storage_url or f'https://<storage_account>.blob.core.windows.net/<container>/<path>/{file_name}')
-
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
         lines = [
-            f'-- ====================================================================',
-            f'-- COPY INTO  ({platform_label})',
-            f'-- Source : {file_name}  ({file_type.upper()})',
-            f'-- Prereq : Table must exist; see CREATE TABLE tab',
-            f'-- ====================================================================',
-            f'',
+            '-- ====================================================================',
+            '-- COPY INTO',
+            f'-- NOT AVAILABLE on {_sql_comment(platform_label)}',
+            '-- ====================================================================',
+            '-- Recommended alternatives:',
         ]
-
-        if file_type in ('csv', 'text'):
+        if self._supports('bulk_insert', target_platform):
+            lines.append(
+                '-- 1. BULK INSERT for high-speed CSV/text ingestion '
+                '(see BULK INSERT tab).'
+            )
+        if self._supports('openrowset', target_platform):
             lines += [
-                f'COPY INTO [{schema_name}].[{table_name}]',
-                f'FROM \'{blob_path}\'',
-                f'WITH (',
-                f'    FILE_TYPE       = \'CSV\',',
-                f'    FIRSTROW        = {2 if has_header else 1},',
-                f'    FIELDTERMINATOR = \'{delim_escaped}\',',
-                f'    ROWTERMINATOR   = \'0x0a\',',
-                f'    ENCODING        = \'{encoding.upper()}\',',
-                f'    CREDENTIAL      = (IDENTITY = \'Storage Account Key\',',
-                f'                       SECRET   = \'<your_storage_account_key>\')',
-                f');',
+                '-- 2. OPENROWSET for ad-hoc reads and ELT patterns '
+                '(see OPENROWSET tab).',
+                '--    Use SELECT INTO or INSERT INTO ... SELECT FROM '
+                'OPENROWSET for loading.',
             ]
-        elif file_type == 'parquet':
-            lines += [
-                f'COPY INTO [{schema_name}].[{table_name}]',
-                f'FROM \'{blob_path}\'',
-                f'WITH (',
-                f'    FILE_TYPE  = \'PARQUET\',',
-                f'    CREDENTIAL = (IDENTITY = \'Storage Account Key\',',
-                f'                  SECRET   = \'<your_storage_account_key>\')',
-                f');',
-            ]
-        elif file_type == 'json':
-            lines += [
-                f'-- COPY INTO does not natively support JSON file type in Synapse.',
-                f'-- Option 1: Convert JSON to Parquet using pandas / Spark, then COPY INTO.',
-                f'-- Option 2: Use OPENROWSET + OPENJSON (see JSON Functions tab).',
-                f'-- Option 3: Use Azure Data Factory to flatten JSON and load as CSV.',
-            ]
-        elif file_type == 'delta':
-            lines += [
-                f'-- COPY INTO does not support Delta Lake directly.',
-                f'-- Use CREATE EXTERNAL TABLE with FORMAT_TYPE = DELTA instead,',
-                f'-- or read via OPENROWSET FORMAT = \'DELTA\' in Synapse Serverless.',
-            ]
-        else:
-            lines += [
-                f'COPY INTO [{schema_name}].[{table_name}]',
-                f'FROM \'{blob_path}\'',
-                f'WITH (',
-                f'    FILE_TYPE  = \'CSV\',',
-                f'    CREDENTIAL = (IDENTITY = \'Storage Account Key\',',
-                f'                  SECRET   = \'<your_storage_account_key>\')',
-                f');',
-            ]
-
-        lines += [
-            f'',
-            f'-- Verify row count after load',
-            f'SELECT COUNT(*) AS loaded_rows FROM [{schema_name}].[{table_name}];',
-        ]
+        if self._supports('json_openjson', target_platform):
+            lines.append(
+                '-- 3. OPENJSON / JSON_VALUE for JSON ingestion '
+                '(see JSON Functions tab).'
+            )
+        if target_platform == 'fabric_sql_db':
+            lines.append(
+                '-- 4. Fabric Data Pipelines / Dataflows Gen2 for '
+                'orchestrated ingestion.'
+            )
         return '\n'.join(lines)
 
     # ------------------------------------------------------------------
@@ -1067,7 +1052,7 @@ class SQLGenerator:
         data_source = _escape_identifier(data_source)
         lines = [
             f'-- ====================================================================',
-            f'-- PREREQUISITE SETUP  ({platform_label})',
+            f'-- PREREQUISITE SETUP  ({_sql_comment(platform_label)})',
             f'-- Run these ONCE before using CREATE EXTERNAL TABLE or OPENROWSET',
             f'-- with a DATA_SOURCE reference.',
             f'-- ====================================================================',
@@ -1088,12 +1073,14 @@ class SQLGenerator:
             f'GO',
             f'',
             f'-- Option B: Managed Identity (no secret needed)',
-            f'-- CREATE DATABASE SCOPED CREDENTIAL [cred_{data_source}]',
+            f'-- CREATE DATABASE SCOPED CREDENTIAL '
+            f'[cred_{_sql_comment(data_source)}]',
             f'-- WITH IDENTITY = \'Managed Identity\';',
             f'-- GO',
             f'',
             f'-- Option C: Shared Access Signature (SAS token)',
-            f'-- CREATE DATABASE SCOPED CREDENTIAL [cred_{data_source}]',
+            f'-- CREATE DATABASE SCOPED CREDENTIAL '
+            f'[cred_{_sql_comment(data_source)}]',
             f'-- WITH',
             f'--     IDENTITY = \'SHARED ACCESS SIGNATURE\',',
             f'--     SECRET   = \'<SAS_token_without_leading_?>\';',
@@ -1157,9 +1144,9 @@ class SQLGenerator:
 
         lines = [
             f'-- ====================================================================',
-            f'-- T-SQL JSON FUNCTIONS  —  {file_name}',
-            f'-- Target  : {platform_label}',
-            f'-- JSON format : {json_format.upper()}',
+            f'-- T-SQL JSON FUNCTIONS  —  {_sql_comment(file_name)}',
+            f'-- Target  : {_sql_comment(platform_label)}',
+            f'-- JSON format : {_sql_comment(json_format.upper())}',
             f'-- Columns     : {len(schema)}',
             f'-- ====================================================================',
             f'',
@@ -1188,7 +1175,7 @@ class SQLGenerator:
             ]
             jv = []
             for col_name, col_type in schema:
-                clean = _clean_identifier(col_name)
+                clean = _escape_identifier(col_name)
                 kind = nesting.get(col_name, 'scalar')
                 if kind in ('object', 'array'):
                     jv.append(f'    JSON_QUERY(@json, \'{_quote_json_path(col_name)}\') AS [{clean}]')
@@ -1225,10 +1212,11 @@ class SQLGenerator:
                 f'-- ----------------------------------------------------------------',
             ]
             for col_name, kind in nested_cols:
-                clean = _clean_identifier(col_name)
+                clean = _escape_identifier(col_name)
                 lines += [
                     f'',
-                    f'-- Expand nested {"array" if kind == "array" else "object"}: $.{col_name}',
+                    f'-- Expand nested {"array" if kind == "array" else "object"}: '
+                    f'$.{_sql_comment(col_name)}',
                     f'SELECT',
                     f'    parent.[key] AS parent_key,',
                     f'    child.[key]  AS child_key,',
@@ -1254,7 +1242,7 @@ class SQLGenerator:
             lines += [
                 f'',
                 f'-- ----------------------------------------------------------------',
-                f'-- 5. JSON_PATH_EXISTS  ({platform_label})',
+                f'-- 5. JSON_PATH_EXISTS  ({_sql_comment(platform_label)})',
                 f'-- ----------------------------------------------------------------',
                 f'SELECT JSON_PATH_EXISTS(@json, \'{_quote_json_path(first_col)}\') AS path_exists;',
             ]
@@ -1262,7 +1250,8 @@ class SQLGenerator:
             lines += [
                 f'',
                 f'-- ----------------------------------------------------------------',
-                f'-- 5. JSON_PATH_EXISTS  — NOT available on {platform_label}',
+                f'-- 5. JSON_PATH_EXISTS  — NOT available on '
+                f'{_sql_comment(platform_label)}',
                 f'--    Requires SQL Server 2022+ or Azure SQL Database',
                 f'-- ----------------------------------------------------------------',
             ]
@@ -1276,7 +1265,8 @@ class SQLGenerator:
                 f'-- 6. JSON_MODIFY  — update a value in the JSON document',
                 f'-- ----------------------------------------------------------------',
                 f'SET @json = JSON_MODIFY(@json, \'{_quote_json_path(first_col)}\', \'new_value\');',
-                f'-- Verify: SELECT JSON_VALUE(@json, \'{_quote_json_path(first_col)}\');',
+                f'-- Verify: SELECT JSON_VALUE(@json, '
+                f'\'{_sql_comment(_quote_json_path(first_col))}\');',
             ]
 
         # ---- Section 7: Cloud OPENROWSET + OPENJSON  (Synapse / Fabric) ---
@@ -1285,7 +1275,8 @@ class SQLGenerator:
             lines += [
                 f'',
                 f'-- ----------------------------------------------------------------',
-                f'-- 7. CLOUD OPENROWSET + OPENJSON  ({platform_label})',
+                f'-- 7. CLOUD OPENROWSET + OPENJSON  '
+                f'({_sql_comment(platform_label)})',
                 f'-- ----------------------------------------------------------------',
                 f'SELECT j.*',
                 f'FROM OPENROWSET(',
@@ -1303,19 +1294,25 @@ class SQLGenerator:
             lines += [
                 f'',
                 f'-- ----------------------------------------------------------------',
-                f'-- 7. Cloud OPENROWSET syntax is not available on {platform_label}.',
+                f'-- 7. Cloud OPENROWSET syntax is not available on '
+                f'{_sql_comment(platform_label)}.',
                 f'--    Use Section 1 (SINGLE_CLOB + OPENJSON) for local JSON files.',
                 f'-- ----------------------------------------------------------------',
             ]
 
         # ---- Section 8: INSERT parsed JSON into table -------------------
         if schema:
-            insert_cols = ', '.join(f'[{_clean_identifier(c)}]' for c, _ in schema if nesting.get(c, 'scalar') == 'scalar')
+            insert_cols = ', '.join(
+                f'[{_escape_identifier(c)}]'
+                for c, _ in schema
+                if nesting.get(c, 'scalar') == 'scalar'
+            )
             if insert_cols:
                 lines += [
                     f'',
                     f'-- ----------------------------------------------------------------',
-                    f'-- 8. INSERT parsed JSON into [{schema_name}].[{table_name}]',
+                    f'-- 8. INSERT parsed JSON into '
+                    f'[{_sql_comment(schema_name)}].[{_sql_comment(table_name)}]',
                     f'--    (create the table first — see CREATE TABLE tab)',
                     f'-- ----------------------------------------------------------------',
                     f'INSERT INTO [{schema_name}].[{table_name}] ({insert_cols})',
@@ -1360,7 +1357,7 @@ class SQLGenerator:
 
         select_cols = []
         for col_name, _ in schema:
-            clean = _clean_identifier(col_name)
+            clean = _escape_identifier(col_name)
             kind = nesting.get(col_name, 'scalar')
             if kind in ('object', 'array'):
                 select_cols.append(f'    JSON_QUERY([{clean}]) AS [{_escape_identifier(col_name)}]')
@@ -1372,7 +1369,7 @@ class SQLGenerator:
         lines = [
             f'-- ====================================================================',
             f'-- FOR JSON PATH  — export SQL rows back to JSON',
-            f'-- Target : {platform_label}',
+            f'-- Target : {_sql_comment(platform_label)}',
             f'-- ====================================================================',
             f'',
             f'-- 1. Basic array output (each row = one JSON object)',
@@ -1403,11 +1400,16 @@ class SQLGenerator:
         if has_json_object:
             lines += [
                 f'',
-                f'-- 5. JSON_OBJECT / JSON_ARRAY  ({platform_label})',
+                f'-- 5. JSON_OBJECT / JSON_ARRAY  '
+                f'({_sql_comment(platform_label)})',
                 f'SELECT',
                 f'    JSON_OBJECT(',
             ]
-            jo_pairs = [f'        \'{_quote_literal(col_name)}\': [{_clean_identifier(col_name)}]' for col_name, _ in schema[:6]]
+            jo_pairs = [
+                f'        \'{_quote_literal(col_name)}\': '
+                f'[{_escape_identifier(col_name)}]'
+                for col_name, _ in schema[:6]
+            ]
             lines.append(',\n'.join(jo_pairs) if jo_pairs else '        \'data\': *')
             lines += [
                 f'    ) AS json_row',
@@ -1416,7 +1418,8 @@ class SQLGenerator:
         else:
             lines += [
                 f'',
-                f'-- 5. JSON_OBJECT / JSON_ARRAY  — NOT available on {platform_label}',
+                f'-- 5. JSON_OBJECT / JSON_ARRAY  — NOT available on '
+                f'{_sql_comment(platform_label)}',
                 f'--    Requires SQL Server 2022+ or Azure SQL Database',
             ]
 
@@ -1450,12 +1453,12 @@ class SQLGenerator:
 
         lines = [
             '-- ====================================================================',
-            f'-- BEST PRACTICES  —  {file_name}',
-            f'-- Target   : {platform_label}',
-            f'-- File type : {file_type.upper()}',
+            f'-- BEST PRACTICES  —  {_sql_comment(file_name)}',
+            f'-- Target   : {_sql_comment(platform_label)}',
+            f'-- File type : {_sql_comment(file_type.upper())}',
             f'-- File size : {size_label}',
             f'-- Row count : {rows_label}',
-            f'-- Encoding  : {encoding}',
+            f'-- Encoding  : {_sql_comment(encoding)}',
             '-- ====================================================================',
             '',
         ]
@@ -1467,8 +1470,6 @@ class SQLGenerator:
 
         # Platform-specific loading recommendation
         load_methods = []
-        if self._supports('copy_into', target_platform):
-            load_methods.append('COPY INTO (fastest for bulk loads)')
         if self._supports('bulk_insert', target_platform):
             load_methods.append('BULK INSERT (high-speed batch loads)')
         if self._supports('openrowset', target_platform):
@@ -1482,7 +1483,8 @@ class SQLGenerator:
 
         if load_methods:
             lines += [
-                f'-- RECOMMENDED LOADING METHODS for {platform_label}:',
+                f'-- RECOMMENDED LOADING METHODS for '
+                f'{_sql_comment(platform_label)}:',
             ]
             for i, m in enumerate(load_methods, 1):
                 lines.append(f'--   {i}. {m}')
@@ -1589,14 +1591,17 @@ class SQLGenerator:
             display_cols = col_names[:max_display]
             lines.append('')
             lines.append('-- Sample data (first rows from file):')
-            header = ' | '.join(str(n)[:20] for n in display_cols)
+            header = ' | '.join(_sql_comment(n)[:20] for n in display_cols)
             if truncated:
                 header += f' | ... ({len(col_names) - max_display} more)'
             lines.append(f'-- {header}')
             lines.append(f'-- {"-" * len(header)}')
             for row in sample_rows[:3]:
                 display_vals = row[:max_display]
-                vals = ' | '.join(str(v if v is not None else 'NULL')[:20] for v in display_vals)
+                vals = ' | '.join(
+                    _sql_comment(v if v is not None else 'NULL')[:20]
+                    for v in display_vals
+                )
                 if truncated:
                     vals += ' | ...'
                 lines.append(f'-- {vals}')
@@ -1607,8 +1612,10 @@ class SQLGenerator:
             lines.append('-- Sample data (first record):')
             for col_name, _ in schema[:10]:
                 val = json_samples.get(col_name, '')
-                val_str = str(val)[:60]
-                lines.append(f'--   {col_name}: {val_str}')
+                val_str = _sql_comment(val)[:60]
+                lines.append(
+                    f'--   {_sql_comment(col_name)}: {val_str}'
+                )
 
         return lines
 
@@ -1642,18 +1649,22 @@ class SQLGenerator:
             comp = (metadata.get('compression') or '').upper()
             return ExternalFileFormatConfig(
                 format_type='PARQUET',
-                data_compression=comp if comp and comp != 'UNCOMPRESSED' else None,
+                data_compression=self.COMPRESSION_CODECS.get(comp),
             )
         elif file_type == 'delta':
             return ExternalFileFormatConfig(format_type='DELTA')
         elif file_type == 'orc':
-            return ExternalFileFormatConfig(format_type='ORC', data_compression='DEFAULT')
+            comp = (metadata.get('compression') or '').upper()
+            return ExternalFileFormatConfig(
+                format_type='ORC',
+                data_compression=self.COMPRESSION_CODECS.get(comp),
+            )
         elif file_type == 'rc':
+            comp = (metadata.get('compression') or '').upper()
             return ExternalFileFormatConfig(
                 format_type='RCFILE',
-                serialization_encoding='UTF8',
-                serializer_method='org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe',
-                deserializer_method='org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe',
+                serde_method='org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe',
+                data_compression=self.COMPRESSION_CODECS.get(comp),
             )
         else:
             return ExternalFileFormatConfig(format_type='DELIMITEDTEXT',
@@ -1671,8 +1682,9 @@ class SQLGenerator:
         sql_type_overrides = metadata.get('sql_type_overrides') or {}
         pad = ' ' * indent
         columns = []
+        _validate_unique_column_names(schema)
         for col_name, col_type in schema:
-            clean_name = _clean_identifier(col_name)
+            clean_name = _escape_identifier(col_name)
             # Use explicit SQL type override if provided by schema editor
             if col_name in sql_type_overrides:
                 sql_type = _safe_sql_type(sql_type_overrides[col_name])
@@ -1697,8 +1709,9 @@ class SQLGenerator:
         sql_type_overrides = metadata.get('sql_type_overrides') or {}
         pad = ' ' * indent
         cols: List[str] = []
+        _validate_unique_column_names(schema)
         for col_name, col_type in schema:
-            clean = _clean_identifier(col_name)
+            clean = _escape_identifier(col_name)
             kind = nesting.get(col_name, 'scalar')
             if kind in ('object', 'array'):
                 cols.append(f'{pad}[{clean}] NVARCHAR(MAX) \'{_quote_json_path(col_name)}\' AS JSON')
@@ -1762,6 +1775,31 @@ def _escape_identifier(name: str) -> str:
 def _quote_literal(value: Any) -> str:
     """Escape a value for safe use inside a T-SQL single-quoted ``'string'`` literal."""
     return str(value).replace("'", "''")
+
+
+def _sql_comment(value: Any) -> str:
+    """Collapse untrusted text to one line before placing it in a SQL comment."""
+    return re.sub(r'[\x00-\x1f\x7f\u2028\u2029]+', ' ', str(value)).strip()
+
+
+def _display_delimiter(value: str) -> str:
+    """Render control delimiters visibly in generated SQL guidance."""
+    control_characters = {'\t': r'\t', '\r': r'\r', '\n': r'\n'}
+    return ''.join(
+        control_characters.get(character, character)
+        for character in value
+    )
+
+
+def _validate_unique_column_names(schema: List[Any]) -> None:
+    """Reject duplicate column names under typical case-insensitive SQL collation."""
+    seen = set()
+    for column in schema:
+        name = str(column[0])
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(f'Duplicate column name: {name}')
+        seen.add(key)
 
 
 _SIMPLE_JSON_KEY = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -1867,7 +1905,11 @@ def _best_practices_warnings(metadata: Dict[str, Any]) -> List[str]:
     numeric_markers = ('int', 'float', 'double', 'decimal', 'numeric', 'real')
     nullable_numeric = [name for name, dtype in schema if name in nullable and any(m in str(dtype).lower() for m in numeric_markers)]
     if nullable_numeric:
-        warnings.append(f'--   Nullable numeric columns detected: {", ".join(nullable_numeric[:5])}. Stage as text if source quality is inconsistent.')
+        column_list = _sql_comment(', '.join(map(str, nullable_numeric[:5])))
+        warnings.append(
+            f'--   Nullable numeric columns detected: {column_list}. '
+            f'Stage as text if source quality is inconsistent.'
+        )
 
     if not warnings:
         return []
@@ -1878,7 +1920,7 @@ def _best_practices_warnings(metadata: Dict[str, Any]) -> List[str]:
 def _best_practices_validation_sql(metadata: Dict[str, Any],
                                    table_name: str) -> List[str]:
     schema = metadata.get('schema') or []
-    cols = [_clean_identifier(col) for col, _ in schema[:3]]
+    cols = [_escape_identifier(col) for col, _ in schema[:3]]
     select_cols = ', '.join(f'[{c}]' for c in cols) if cols else '*'
 
     lines = [
@@ -1909,7 +1951,8 @@ def _best_practices_csv(size_mb: float, encoding: str, delimiter: str,
                         has_header: bool, compression: str) -> List[str]:
     delim_name = {',' : 'comma', '\t': 'tab', '|': 'pipe', ';': 'semicolon'}.get(delimiter, repr(delimiter))
     lines = [
-        f'-- Detected: {delim_name}-delimited, encoding {encoding}',
+        f'-- Detected: {_sql_comment(delim_name)}-delimited, '
+        f'encoding {_sql_comment(encoding)}',
         '',
         '-- 1. TOOL SELECTION',
         '--    < 1 GB   → BULK INSERT into SQL Server / Azure SQL (fastest local load)',
@@ -1917,7 +1960,7 @@ def _best_practices_csv(size_mb: float, encoding: str, delimiter: str,
         '--    > 50 GB  → OPENROWSET or CREATE EXTERNAL TABLE (avoid materialising data)',
         '',
         '-- 2. ENCODING',
-        f'--    Detected encoding : {encoding}',
+        f'--    Detected encoding : {_sql_comment(encoding)}',
         '--    Always specify CODEPAGE in BULK INSERT to avoid silent data corruption.',
         '--    UTF-8 → CODEPAGE = \'65001\'   |   UTF-16 → CODEPAGE = \'1200\'',
         '--    Latin-1 / CP1252 → CODEPAGE = \'1252\'',
@@ -1946,7 +1989,8 @@ def _best_practices_csv(size_mb: float, encoding: str, delimiter: str,
         '--    WITH (',
         f'--        FILE_TYPE = \'CSV\',',
         f'--        FIRSTROW = {2 if has_header else 1},',
-        f'--        FIELDTERMINATOR = \'{delimiter}\',',
+        f'--        FIELDTERMINATOR = '
+        f'\'{_sql_comment(_display_delimiter(delimiter))}\',',
         '--        CREDENTIAL = (IDENTITY = \'Storage Account Key\', SECRET = \'<key>\')',
         '--    );',
     ]
@@ -1958,7 +2002,8 @@ def _best_practices_parquet(size_mb: float, compression: str,
     row_groups = (metadata.get('parquet_metadata') or {}).get('num_row_groups', 'unknown')
     comp_label = compression or 'UNCOMPRESSED'
     lines = [
-        f'-- Detected: Parquet, compression={comp_label}, row_groups={row_groups}',
+        f'-- Detected: Parquet, compression={_sql_comment(comp_label)}, '
+        f'row_groups={_sql_comment(row_groups)}',
         '',
         '-- 1. TOOL SELECTION',
         '--    Synapse Serverless → OPENROWSET (zero-copy, pay-per-query)',
@@ -1966,7 +2011,7 @@ def _best_practices_parquet(size_mb: float, compression: str,
         '--    SQL Server 2022+   → OPENROWSET with PolyBase',
         '',
         '-- 2. COMPRESSION',
-        f'--    Detected: {comp_label}',
+        f'--    Detected: {_sql_comment(comp_label)}',
         '--    Snappy → best balance of speed and ratio (recommended for analytics)',
         '--    ZSTD   → better compression, requires pyarrow/Spark write options',
         '--    LZ4    → fastest decompression, slightly larger files',
@@ -1980,7 +2025,7 @@ def _best_practices_parquet(size_mb: float, compression: str,
         '',
         '-- 4. ROW GROUP SIZE',
         '--    Ideal row group size: 128 MB (Spark default).',
-        f'--    This file has {row_groups} row group(s).',
+        f'--    This file has {_sql_comment(row_groups)} row group(s).',
         '--    Too many small row groups → slow reads. Repartition / coalesce before write.',
         '',
         '-- 5. SCHEMA EVOLUTION',
@@ -2004,8 +2049,8 @@ def _best_practices_delta(metadata: Dict[str, Any]) -> List[str]:
     version = dm.get('version', 'unknown')
     partition_cols = dm.get('partition_columns') or []
     lines = [
-        f'-- Detected: Delta Lake table  (version {version})',
-        f'-- Partition columns: {partition_cols or "none"}',
+        f'-- Detected: Delta Lake table  (version {_sql_comment(version)})',
+        f'-- Partition columns: {_sql_comment(partition_cols or "none")}',
         '',
         '-- 1. TOOL SELECTION',
         '--    Azure Synapse Serverless → OPENROWSET FORMAT=\'DELTA\'  (GA in 2024)',
@@ -2026,7 +2071,8 @@ def _best_practices_delta(metadata: Dict[str, Any]) -> List[str]:
         '',
         '-- 4. PARTITION PRUNING',
         '--    Synapse Serverless respects Delta partition pruning.',
-        f'--    Partition by: {partition_cols or "< not partitioned >"}',
+        f'--    Partition by: '
+        f'{_sql_comment(partition_cols or "< not partitioned >")}',
         '--    Add matching WHERE clauses to eliminate partition scans.',
         '',
         '-- 5. OPTIMIZE & ZORDER (Databricks / OSS Delta)',
@@ -2081,5 +2127,3 @@ def _best_practices_generic() -> List[str]:
         '-- 3. Validate and transform into typed production table.',
         '-- 4. Add column statistics after loading for the query optimiser.',
     ]
-
-

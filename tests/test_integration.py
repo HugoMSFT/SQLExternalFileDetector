@@ -4,6 +4,7 @@ import os
 import csv
 import json
 import tempfile
+from unittest.mock import patch
 
 from external_file_detection.file_detector import FileDetector
 from external_file_detection.sql_generator import SQLGenerator
@@ -109,6 +110,7 @@ def test_web_gui_upload_analyze_sql_flow():
     assert data['count'] == 1
     stored_path = data['files'][0]['file_path']
     assert data['files'][0]['file_type'] == 'csv'
+    assert os.path.exists(stored_path)
 
     # Get SQL DDL
     from urllib.parse import quote
@@ -121,3 +123,75 @@ def test_web_gui_upload_analyze_sql_flow():
     stmts = data2.get('statements', {})
     assert 'create_table' in stmts
     assert 'CREATE TABLE' in stmts['create_table']
+
+
+def test_remote_analyze_files_uses_managed_temporary_directory():
+    """Remote single-file analysis downloads safely and restores source paths."""
+    downloaded_paths = []
+
+    class FakeRemoteHandler:
+        def list_files(self, path):
+            return [path]
+
+        def get_file_info(self, path):
+            return {}
+
+        def download_file(self, source_path, local_path):
+            assert os.path.isdir(os.path.dirname(local_path))
+            downloaded_paths.append(local_path)
+            with open(local_path, 'w', encoding='utf-8') as handle:
+                handle.write('id,name\n1,Alice\n')
+            return local_path
+
+    app = ExternalFileDetectorApp()
+    with patch(
+        'external_file_detection.external_file_detector.StorageFactory.create_handler',
+        return_value=FakeRemoteHandler(),
+    ):
+        results = app.analyze_files(['s3://bucket/data.csv'])
+
+    assert len(results) == 1
+    assert 'error' not in results[0]
+    assert results[0]['metadata']['file_path'] == 's3://bucket/data.csv'
+    assert results[0]['metadata']['file_name'] == 'data.csv'
+    assert not os.path.exists(downloaded_paths[0])
+
+
+def test_remote_download_uses_filesystem_safe_temporary_name():
+    """URL-decoded reserved characters must not enter Windows temp paths."""
+    downloaded_paths = []
+
+    class FakeRemoteHandler:
+        def download_file(self, source_path, local_path):
+            downloaded_paths.append(local_path)
+            with open(local_path, 'w', encoding='utf-8') as handle:
+                handle.write('id,name\n1,Alice\n')
+            return local_path
+
+    app = ExternalFileDetectorApp()
+    with patch(
+        'external_file_detection.external_file_detector.StorageFactory.create_handler',
+        return_value=FakeRemoteHandler(),
+    ):
+        results = app.analyze_files(['s3://bucket/folder/a%3Fb.csv'])
+
+    assert 'error' not in results[0]
+    assert results[0]['metadata']['file_name'] == 'a?b.csv'
+    assert results[0]['metadata']['file_type'] == 'csv'
+    assert os.path.basename(downloaded_paths[0]).endswith('.csv')
+    assert '?' not in os.path.basename(downloaded_paths[0])
+
+
+def test_detector_metadata_errors_fail_the_file_analysis():
+    """Parse failures must not produce success-shaped SQL results."""
+    with tempfile.TemporaryDirectory() as td:
+        broken_path = os.path.join(td, 'broken.json')
+        with open(broken_path, 'w', encoding='utf-8') as handle:
+            handle.write('{not valid json}')
+
+        result = ExternalFileDetectorApp().analyze_files([broken_path])[0]
+
+    assert 'error' in result
+    assert 'Failed to analyze file' in result['error']
+    assert result['sql_ddl'] is None
+    assert result['metadata']['file_type'] == 'json'

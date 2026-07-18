@@ -19,13 +19,14 @@ def test_csv_file_format_generation():
     
     assert 'CREATE EXTERNAL FILE FORMAT [test_csv_format]' in ddl
     assert 'FORMAT_TYPE = DELIMITEDTEXT' in ddl
+    assert 'FORMAT_OPTIONS (' in ddl
     assert "FIELD_TERMINATOR = ','" in ddl
     assert 'FIRST_ROW = 2' in ddl
     assert 'USE_TYPE_DEFAULT = TRUE' in ddl
 
 
 def test_json_file_format_generation():
-    """Test JSON file format generation."""
+    """JSON external file formats are rejected for exposed SQL targets."""
     generator = SQLGenerator()
     
     metadata = {
@@ -35,8 +36,8 @@ def test_json_file_format_generation():
     
     ddl = generator.generate_external_file_format(metadata, 'test_json_format')
     
-    assert 'CREATE EXTERNAL FILE FORMAT [test_json_format]' in ddl
-    assert 'FORMAT_TYPE = JSON' in ddl
+    assert 'NOT AVAILABLE' in ddl
+    assert 'OPENROWSET with OPENJSON' in ddl
 
 
 def test_parquet_file_format_generation():
@@ -53,7 +54,52 @@ def test_parquet_file_format_generation():
     
     assert 'CREATE EXTERNAL FILE FORMAT [test_parquet_format]' in ddl
     assert 'FORMAT_TYPE = PARQUET' in ddl
-    assert 'DATA_COMPRESSION = \'SNAPPY\'' in ddl
+    assert (
+        "DATA_COMPRESSION = "
+        "'org.apache.hadoop.io.compress.SnappyCodec'"
+    ) in ddl
+
+
+def test_rc_file_format_uses_serde_method_on_sql_server_2019():
+    """RCFILE uses the documented SERDE_METHOD option name."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'rc'}, 'test_rc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert 'FORMAT_TYPE = RCFILE' in ddl
+    assert 'SERDE_METHOD' in ddl
+    assert 'SERIALIZER_METHOD' not in ddl
+    assert 'DESERIALIZER_METHOD' not in ddl
+    assert 'DATA_COMPRESSION' not in ddl
+
+
+def test_rc_file_format_emits_only_explicit_compression():
+    """RCFile compression must not be guessed from absent metadata."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'rc', 'compression': 'gzip'},
+        'test_rc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert (
+        "DATA_COMPRESSION = 'org.apache.hadoop.io.compress.GzipCodec'"
+        in ddl
+    )
+
+
+def test_orc_file_format_does_not_guess_compression():
+    """ORC metadata without a codec should not declare DefaultCodec."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'orc'},
+        'test_orc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert 'DATA_COMPRESSION' not in ddl
 
 
 def test_external_table_generation():
@@ -387,6 +433,25 @@ def test_nvarchar_sizing_with_max_string_lengths():
     sql = gen.generate_create_table(meta, 'tbl')
     # short_col stays NVARCHAR(255) default; long_col should be NVARCHAR(MAX) (>4000)
     assert 'NVARCHAR(MAX)' in sql
+
+
+def test_best_practices_render_tab_delimiter_visibly():
+    """Control delimiters should not disappear from generated guidance."""
+    generator = SQLGenerator()
+    metadata = {
+        'file_type': 'csv',
+        'file_path': 'events.tsv',
+        'file_name': 'events.tsv',
+        'file_size': 100,
+        'encoding': 'utf-8',
+        'delimiter': '\t',
+        'has_header': True,
+        'schema': [('id', 'int64')],
+    }
+
+    sql = generator.generate_best_practices(metadata)
+
+    assert "FIELDTERMINATOR = '\\t'" in sql
 
 
 # -------------------------------------------------------------------

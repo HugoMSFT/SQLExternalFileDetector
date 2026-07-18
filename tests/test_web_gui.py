@@ -1,9 +1,11 @@
 """Tests for web GUI functionality."""
 
 import unittest
+import io
 import json
 import os
 import tempfile
+import time
 from unittest.mock import patch, MagicMock
 
 from external_file_detection.web_gui import ExternalFileDetectionWebGUI
@@ -219,7 +221,7 @@ class TestWebGUI(unittest.TestCase):
         """Test error handling in API endpoints."""
         # Test preview with unregistered file
         response = self.client.get('/api/preview/nonexistent_file.csv')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 404)
         data = json.loads(response.data)
         self.assertFalse(data['success'])
         self.assertIn('not found', data['error'].lower())
@@ -234,9 +236,86 @@ class TestWebGUI(unittest.TestCase):
 
         # Test analyze with no files
         response = self.client.post('/api/analyze_files', json={'files': []})
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         data = json.loads(response.data)
         self.assertFalse(data['success'])
+
+    def test_uploaded_file_persists_for_preview(self):
+        response = self.client.post('/api/upload', data={
+            'files': (io.BytesIO(b'id,name\n1,Alice\n'), 'upload.csv'),
+        }, content_type='multipart/form-data')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        stored_path = data['files'][0]['file_path']
+        self.assertTrue(os.path.exists(stored_path))
+        self.assertEqual(data['files'][0]['file_name'], 'upload.csv')
+
+        from urllib.parse import quote
+        preview_url = '/api/preview_table/' + quote(
+            stored_path.replace('\\', '/').lstrip('/'), safe='/'
+        )
+        preview = self.client.get(preview_url)
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.get_json()['success'])
+
+    def test_compatibility_upload_keeps_returned_path_alive(self):
+        response = self.client.post('/api/analyze-upload', data={
+            'files': (io.BytesIO(b'id,name\n1,Alice\n'), 'legacy.csv'),
+        }, content_type='multipart/form-data')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        stored_path = data['results'][0]['metadata']['file_path']
+        self.assertTrue(data['results'][0]['success'])
+        self.assertTrue(os.path.exists(stored_path))
+
+    def test_replaced_upload_batch_is_retired_before_cleanup(self):
+        first = self.client.post('/api/upload', data={
+            'files': (io.BytesIO(b'id\n1\n'), 'first.csv'),
+        }, content_type='multipart/form-data').get_json()
+        first_path = first['files'][0]['file_path']
+        first_dir = os.path.dirname(first_path)
+
+        self.client.post('/api/upload', data={
+            'files': (io.BytesIO(b'id\n2\n'), 'second.csv'),
+        }, content_type='multipart/form-data')
+
+        self.assertTrue(os.path.exists(first_path))
+        with self.web_gui._sessions_lock:
+            self.web_gui._retired_upload_dirs[first_dir] = (
+                time.time() - self.web_gui._session_ttl - 1
+            )
+        with self.app.test_request_context('/'):
+            self.web_gui._get_files()
+        self.assertFalse(os.path.exists(first_dir))
+
+    def test_binary_legacy_preview_uses_bounded_detector_preview(self):
+        parquet_path = os.path.join(self.test_root, 'bounded.parquet')
+        with open(parquet_path, 'wb') as handle:
+            handle.write(b'PAR1')
+        preview_data = {
+            'columns': [{'name': 'id', 'type': 'int64'}],
+            'rows': [[1]],
+            'total_rows': 1,
+            'truncated': False,
+        }
+
+        with patch.object(
+            self.web_gui.file_detector,
+            'get_preview_data',
+            return_value=preview_data,
+        ) as get_preview:
+            content = self.web_gui._generate_preview_content({
+                'file_path': parquet_path,
+                'file_type': 'parquet',
+                'encoding': 'binary',
+            })
+
+        get_preview.assert_called_once_with(parquet_path, max_rows=10)
+        self.assertIn('"rows"', content)
+        self.assertIn('[\n      1\n    ]', content)
 
     def test_sql_ddl_api_via_analyze_flow(self):
         """Test SQL DDL generation after analysing real files."""
@@ -348,6 +427,13 @@ class TestSafeDebug(unittest.TestCase):
         from external_file_detection.web_gui import _safe_debug
         self.assertFalse(_safe_debug('127.0.0.1', False))
         self.assertFalse(_safe_debug('0.0.0.0', False))
+
+    def test_builtin_server_rejects_non_loopback_bind(self):
+        from external_file_detection.web_gui import _validate_bind_host
+
+        _validate_bind_host('127.0.0.1')
+        with self.assertRaises(ValueError):
+            _validate_bind_host('0.0.0.0')
 
 
 class TestSchemaEditorEscaping(unittest.TestCase):

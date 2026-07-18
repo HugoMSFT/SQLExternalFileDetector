@@ -1,14 +1,34 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "external-file-detection"
-version = "1.0.0"
-description = "External File Detector for SQL - detects file types and generates SQL DDL"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+dynamic = ["version"]
+description = "Detect external data files and generate platform-aware SQL DDL"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "HugoMSFT"}]
+keywords = [
+    "sql-server",
+    "azure-sql",
+    "microsoft-fabric",
+    "parquet",
+    "delta-lake",
+    "iceberg",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: Flask",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+]
 dependencies = [
     "pandas>=1.5.0",
     "pyarrow>=10.0.0",
@@ -25,18 +45,38 @@ azure = [
     "azure-identity>=1.12.0",
 ]
 delta = ["deltalake>=0.10.0"]
+spark = [
+    "delta-spark>=2.2.0",
+    "pyspark>=3.3.0",
+]
+test = [
+    "boto3>=1.26.0",
+    "pytest>=7.4.0",
+]
 all = [
     "boto3>=1.26.0",
     "azure-storage-blob>=12.14.0",
     "azure-identity>=1.12.0",
+    "delta-spark>=2.2.0",
     "deltalake>=0.10.0",
+    "pyspark>=3.3.0",
 ]
 
 [project.scripts]
 external-file-detector = "external_file_detection.cli:main"
+
+[project.urls]
+Repository = "https://github.com/HugoMSFT/SQLExternalFileDetector"
+Issues = "https://github.com/HugoMSFT/SQLExternalFileDetector/issues"
 
 [tool.setuptools.packages.find]
 include = ["external_file_detection*"]
 
 [tool.setuptools.package-data]
 external_file_detection = ["templates/*.html"]
+
+[tool.setuptools.dynamic]
+version = {attr = "external_file_detection.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

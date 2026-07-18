@@ -145,3 +145,48 @@ def test_benign_names_unchanged():
                                   target_platform='fabric_sql_db')
     assert "'$.id'" in sql
     assert "'$.name'" in sql
+
+
+def test_multiline_sample_value_stays_inside_sql_comment():
+    gen = SQLGenerator()
+    metadata = {
+        'file_type': 'csv',
+        'file_path': 'data.csv',
+        'schema': [('value', 'str')],
+        'sample_rows': [['safe\nDROP TABLE important;--']],
+    }
+
+    sql = gen.generate_create_table(metadata)
+
+    assert '\nDROP TABLE important' not in sql
+    assert '-- safe DROP TABLE impo' in sql
+
+
+def test_distinct_source_column_names_do_not_collapse():
+    gen = SQLGenerator()
+    metadata = {
+        'file_type': 'csv',
+        'file_path': 'data.csv',
+        'schema': [('a-b', 'str'), ('a b', 'str')],
+    }
+
+    sql = gen.generate_create_table(metadata)
+
+    assert '[a-b] NVARCHAR(255)' in sql
+    assert '[a b] NVARCHAR(255)' in sql
+    assert sql.count('[a_b]') == 0
+
+
+def test_duplicate_column_names_are_rejected():
+    gen = SQLGenerator()
+    metadata = {
+        'file_type': 'csv',
+        'file_path': 'data.csv',
+        'schema': [('id', 'int'), ('ID', 'int')],
+    }
+
+    try:
+        gen.generate_create_table(metadata)
+        assert False, 'Expected duplicate column validation to fail'
+    except ValueError as exc:
+        assert 'Duplicate column name' in str(exc)

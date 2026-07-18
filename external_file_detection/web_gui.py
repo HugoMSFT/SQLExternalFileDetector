@@ -7,8 +7,10 @@ Inspired by ParquetViewer, this provides a user-friendly web interface for:
 """
 
 import os
+import io
 import json
 import logging
+import shutil
 import uuid
 import time
 import tempfile
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from flask import Flask, render_template, request, jsonify, session, send_file
+    from werkzeug.utils import secure_filename
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
@@ -35,6 +38,43 @@ MAX_UPLOAD_SIZE = 200 * 1024 * 1024
 
 # Hosts that keep the server bound to the local machine only.
 _LOOPBACK_HOSTS = {'127.0.0.1', 'localhost', '::1'}
+
+
+def _is_within_root(path: str, root: str) -> bool:
+    """Return whether *path* resolves to *root* or one of its descendants."""
+    resolved_path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    resolved_root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
+    try:
+        return os.path.commonpath([resolved_root, resolved_path]) == resolved_root
+    except ValueError:
+        return False
+
+
+def _paths_equal(left: str, right: str) -> bool:
+    """Compare local paths canonically while preserving remote URL semantics."""
+    if '://' in left or '://' in right:
+        return left == right
+    return os.path.normcase(os.path.realpath(os.path.abspath(left))) == (
+        os.path.normcase(os.path.realpath(os.path.abspath(right)))
+    )
+
+
+def _decode_route_path(file_path: str) -> str:
+    """Restore an absolute local path captured by Flask's path converter."""
+    decoded = unquote(file_path)
+    if os.path.isabs(decoded):
+        return decoded
+    return os.path.join(os.path.sep, decoded)
+
+
+def _directory_size(directory_path: str) -> int:
+    """Return the total size of non-hidden files under a table directory."""
+    return sum(
+        os.path.getsize(os.path.join(root, filename))
+        for root, _, filenames in os.walk(directory_path)
+        for filename in filenames
+        if not filename.startswith('.')
+    )
 
 
 def _safe_debug(host: str, debug: bool) -> bool:
@@ -58,6 +98,17 @@ def _safe_debug(host: str, debug: bool) -> bool:
             "Run on 127.0.0.1 to use debug mode.", host)
         return False
     return True
+
+
+def _validate_bind_host(host: str) -> None:
+    """Keep the unauthenticated development server on loopback interfaces."""
+    if host is None or host.lower() in _LOOPBACK_HOSTS:
+        return
+    raise ValueError(
+        "The built-in web server is loopback-only because its filesystem APIs "
+        "do not provide authentication. Deploy create_app() behind an "
+        "authenticated reverse proxy for remote access."
+    )
 
 
 def _validate_path(path: str, root_dir: str = None,
@@ -85,7 +136,7 @@ def _validate_path(path: str, root_dir: str = None,
     
     # Root directory constraint (after symlink resolution)
     root = os.path.realpath(os.path.abspath(root_dir or os.getcwd()))
-    if not normalized_path.startswith(root + os.sep) and normalized_path != root:
+    if not _is_within_root(normalized_path, root):
         raise ValueError("Path is outside the allowed root directory")
     
     # Check if path exists
@@ -125,6 +176,11 @@ def _clean_results(results):
         return str(results)
 
 
+def _error_response(message: str, status: int):
+    """Return a consistent JSON API error payload."""
+    return jsonify({'success': False, 'error': message}), status
+
+
 class ExternalFileDetectionWebGUI:
     """Web-based GUI application for External File Detection."""
     
@@ -142,14 +198,17 @@ class ExternalFileDetectionWebGUI:
         self.app = Flask(__name__, template_folder='templates', static_folder=None)
         self.app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_SIZE
         self.app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+        self._upload_tempdir = tempfile.TemporaryDirectory(prefix='efd_web_')
+        self._upload_root = self._upload_tempdir.name
         self.detector_app = ExternalFileDetectorApp()
         self.file_detector = FileDetector()
         self.sql_generator = self.detector_app.sql_generator
         
         # Thread-safe per-session file store
         self._sessions_lock = threading.Lock()
-        self._sessions: Dict[str, Dict[str, Any]] = {}  # sid -> {'files': [...], 'ts': float}
+        self._sessions: Dict[str, Dict[str, Any]] = {}
         self._session_ttl = 3600  # 1 hour TTL
+        self._retired_upload_dirs: Dict[str, float] = {}
         
         self.setup_routes()
 
@@ -163,24 +222,150 @@ class ExternalFileDetectionWebGUI:
 
     def _get_files(self) -> List[Dict[str, Any]]:
         sid = self._sid()
+        stale_upload_dirs: List[str] = []
         with self._sessions_lock:
-            entry = self._sessions.setdefault(sid, {'files': [], 'ts': time.time()})
+            stale_upload_dirs.extend(self._cleanup_expired_sessions())
+            entry = self._sessions.setdefault(
+                sid, {'files': [], 'upload_dirs': [], 'ts': time.time()}
+            )
             entry['ts'] = time.time()
-            return entry['files']
+            files = list(entry['files'])
+        self._remove_upload_dirs(stale_upload_dirs)
+        return files
 
-    def _set_files(self, files: List[Dict[str, Any]]) -> None:
+    def _set_files(self, files: List[Dict[str, Any]],
+                   upload_dirs: Optional[List[str]] = None) -> None:
         sid = self._sid()
+        stale_upload_dirs: List[str] = []
         with self._sessions_lock:
-            self._sessions[sid] = {'files': files, 'ts': time.time()}
-            self._cleanup_expired_sessions()
+            previous = self._sessions.get(
+                sid, {'files': [], 'upload_dirs': [], 'ts': 0}
+            )
+            if upload_dirs is None:
+                retained_upload_dirs = list(previous.get('upload_dirs', []))
+            else:
+                retained_upload_dirs = list(upload_dirs)
+                now = time.time()
+                for path in previous.get('upload_dirs', []):
+                    if path not in retained_upload_dirs:
+                        self._retired_upload_dirs[path] = now
+            self._sessions[sid] = {
+                'files': list(files),
+                'upload_dirs': retained_upload_dirs,
+                'ts': time.time(),
+            }
+            stale_upload_dirs.extend(self._cleanup_expired_sessions())
+        self._remove_upload_dirs(stale_upload_dirs)
 
-    def _cleanup_expired_sessions(self) -> None:
-        """Remove sessions older than TTL. Called inside _sessions_lock."""
+    def _cleanup_expired_sessions(self) -> List[str]:
+        """Remove expired session entries and return their upload directories."""
         now = time.time()
         expired = [k for k, v in self._sessions.items()
                    if now - v.get('ts', 0) > self._session_ttl]
+        upload_dirs: List[str] = []
         for k in expired:
+            entry = self._sessions[k]
+            for path in entry.get('upload_dirs', []):
+                self._retired_upload_dirs[path] = min(
+                    self._retired_upload_dirs.get(path, now),
+                    entry.get('ts', now),
+                )
             del self._sessions[k]
+        retired = [
+            path
+            for path, retired_at in self._retired_upload_dirs.items()
+            if now - retired_at > self._session_ttl
+        ]
+        for path in retired:
+            del self._retired_upload_dirs[path]
+        upload_dirs.extend(retired)
+        return upload_dirs
+
+    def _remove_upload_dirs(self, paths: List[str]) -> None:
+        upload_root = os.path.realpath(self._upload_root)
+        for path in set(paths):
+            resolved = os.path.realpath(path)
+            inside_root = _is_within_root(resolved, upload_root)
+            if (
+                inside_root
+                and os.path.normcase(resolved) != os.path.normcase(upload_root)
+            ):
+                shutil.rmtree(resolved, ignore_errors=True)
+
+    def _new_upload_dir(self) -> str:
+        session_root = os.path.join(self._upload_root, self._sid())
+        os.makedirs(session_root, exist_ok=True)
+        return tempfile.mkdtemp(prefix='batch_', dir=session_root)
+
+    @staticmethod
+    def _upload_destination(upload_dir: str, filename: str):
+        safe_name = secure_filename(Path(filename).name)
+        if not safe_name:
+            raise ValueError('Upload filename is invalid')
+        unique_name = f'{uuid.uuid4().hex}_{safe_name}'
+        return os.path.join(upload_dir, unique_name), safe_name
+
+    def _analyze_uploads(self, uploaded_files) -> tuple:
+        """Persist and analyze uploaded files for either upload endpoint."""
+        upload_dir = self._new_upload_dir()
+        analyzed: List[Dict[str, Any]] = []
+        for uploaded_file in uploaded_files:
+            if not uploaded_file.filename:
+                continue
+            destination = None
+            try:
+                destination, safe_name = self._upload_destination(
+                    upload_dir, uploaded_file.filename
+                )
+                uploaded_file.save(destination)
+                metadata = self.file_detector.analyze_file_metadata(
+                    destination
+                )
+                metadata['file_name'] = safe_name
+                metadata['uploaded'] = True
+                analyzed.append(metadata)
+            except Exception as e:
+                analyzed.append({
+                    'file_path': destination or uploaded_file.filename,
+                    'file_name': (
+                        secure_filename(uploaded_file.filename) or 'upload'
+                    ),
+                    'file_type': 'error',
+                    'file_size': 0,
+                    'error': f'Analysis failed: {type(e).__name__}: {e}',
+                })
+        return analyzed, upload_dir
+
+    def _validate_file_data_path(self, file_data: Dict[str, Any],
+                                 allow_dirs: bool = False) -> str:
+        file_path = file_data['file_path']
+        resolved = os.path.realpath(os.path.abspath(file_path))
+        upload_root = os.path.realpath(self._upload_root)
+        is_upload = _is_within_root(resolved, upload_root)
+        allowed_root = upload_root if is_upload else self._root_dir
+        return _validate_path(
+            file_path,
+            root_dir=allowed_root,
+            allow_files=True,
+            allow_dirs=allow_dirs,
+        )
+
+    def _find_file_data(self, file_path: str) -> Optional[Dict[str, Any]]:
+        return next(
+            (
+                item for item in self._get_files()
+                if _paths_equal(item.get('file_path', ''), file_path)
+            ),
+            None,
+        )
+
+    def _table_file_type(self, path: str) -> Optional[str]:
+        """Return the supported table type for a local directory."""
+        if self.file_detector.is_delta_table_directory(path):
+            return 'delta'
+        if self.file_detector.is_iceberg_table_directory(path):
+            return 'iceberg'
+        return None
 
     def setup_routes(self):
         """Set up Flask routes."""
@@ -208,7 +393,13 @@ class ExternalFileDetectionWebGUI:
                 
                 # Add parent directory option if not at root
                 parent = os.path.dirname(path)
-                if parent != path:  # at root when dirname == path (works on Windows & Unix)
+                browse_root = os.path.realpath(
+                    os.path.abspath(self._root_dir or os.getcwd())
+                )
+                if (
+                    os.path.normcase(path) != os.path.normcase(browse_root)
+                    and _is_within_root(parent, browse_root)
+                ):
                     items.append({
                         'name': '..',
                         'path': parent,
@@ -220,34 +411,14 @@ class ExternalFileDetectionWebGUI:
                 for item in sorted(os.listdir(path)):
                     item_path = os.path.join(path, item)
                     if os.path.isdir(item_path):
-                        # Detect Delta tables: folder contains _delta_log
-                        if os.path.isdir(os.path.join(item_path, '_delta_log')):
-                            # Calculate total size of parquet files in the delta folder
-                            delta_size = sum(
-                                os.path.getsize(os.path.join(dp, f))
-                                for dp, _, fns in os.walk(item_path)
-                                for f in fns if not f.startswith('.')
-                            )
+                        table_type = self._table_file_type(item_path)
+                        if table_type:
                             items.append({
                                 'name': item,
                                 'path': item_path,
                                 'type': 'delta_table',
-                                'file_type': 'delta',
-                                'size': delta_size
-                            })
-                        # Detect Iceberg tables: folder contains metadata/v*.metadata.json
-                        elif self.file_detector.is_iceberg_table_directory(item_path):
-                            iceberg_size = sum(
-                                os.path.getsize(os.path.join(dp, f))
-                                for dp, _, fns in os.walk(item_path)
-                                for f in fns if not f.startswith('.')
-                            )
-                            items.append({
-                                'name': item,
-                                'path': item_path,
-                                'type': 'delta_table',
-                                'file_type': 'iceberg',
-                                'size': iceberg_size
+                                'file_type': table_type,
+                                'size': _directory_size(item_path),
                             })
                         else:
                             items.append({
@@ -276,20 +447,14 @@ class ExternalFileDetectionWebGUI:
                 })
                 
             except ValueError as e:
-                return jsonify({
-                    'success': False,
-                    'error': f'Directory not accessible: {e}'
-                })
+                return _error_response(f'Directory not accessible: {e}', 400)
             except PermissionError:
-                return jsonify({
-                    'success': False,
-                    'error': f'Permission denied: cannot read {path}'
-                })
-            except Exception as e:
-                return jsonify({
-                    'success': False,
-                    'error': f'Error accessing directory: {e}'
-                })
+                return _error_response(
+                    f'Permission denied: cannot read {path}', 403
+                )
+            except Exception:
+                logger.exception('Error in /api/browse')
+                return _error_response('Server error accessing directory', 500)
                 
         @self.app.route('/api/analyze_files', methods=['POST'])
         def analyze_files():
@@ -297,12 +462,12 @@ class ExternalFileDetectionWebGUI:
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'success': False, 'error': 'Invalid request data'})
+                    return _error_response('Invalid request data', 400)
                     
                 file_paths = data.get('files', [])
                 
                 if not file_paths:
-                    return jsonify({'success': False, 'error': 'No files provided'})
+                    return _error_response('No files provided', 400)
                 
                 # Build new file list
                 analyzed: List[Dict[str, Any]] = []
@@ -312,13 +477,14 @@ class ExternalFileDetectionWebGUI:
                     try:
                         # Validate and sanitize file path
                         # Allow dirs for Delta/Iceberg tables
-                        is_delta = (os.path.isdir(file_path) and
-                                    os.path.isdir(os.path.join(file_path, '_delta_log')))
-                        is_iceberg = (os.path.isdir(file_path) and
-                                      self.file_detector.is_iceberg_table_directory(file_path))
+                        table_type = (
+                            self._table_file_type(file_path)
+                            if os.path.isdir(file_path)
+                            else None
+                        )
                         file_path = _validate_path(file_path, root_dir=self._root_dir,
                                                     allow_files=True,
-                                                   allow_dirs=is_delta or is_iceberg)
+                                                   allow_dirs=table_type is not None)
                         
                         metadata = self.file_detector.analyze_file_metadata(file_path)
                         analyzed.append(metadata)
@@ -344,7 +510,7 @@ class ExternalFileDetectionWebGUI:
                             'error': f'Analysis failed: {type(e).__name__}: {e}'
                         })
                 
-                self._set_files(analyzed)
+                self._set_files(analyzed, upload_dirs=[])
                 return jsonify(_clean_results({
                     'success': True,
                     'files': analyzed,
@@ -353,46 +519,42 @@ class ExternalFileDetectionWebGUI:
                 
             except Exception:
                 logger.exception('Error in /api/analyze_files')
-                return jsonify({'success': False, 'error': 'Server error processing request'})
+                return _error_response('Server error processing request', 500)
 
         @self.app.route('/api/upload', methods=['POST'])
         def upload_files():
-            """Accept uploaded files, save to temp dir, and analyze them."""
+            """Accept uploaded files, persist them for the session, and analyze them."""
+            upload_dir = None
             try:
                 uploaded = request.files.getlist('files')
                 if not uploaded:
-                    return jsonify({'success': False, 'error': 'No files uploaded'})
+                    return jsonify({
+                        'success': False, 'error': 'No files uploaded'
+                    }), 400
 
-                analyzed: List[Dict[str, Any]] = []
+                analyzed, upload_dir = self._analyze_uploads(uploaded)
 
-                with tempfile.TemporaryDirectory(prefix='efd_upload_') as upload_dir:
-                    for f in uploaded:
-                        if not f.filename:
-                            continue
-                        # Sanitize the filename to prevent path traversal
-                        safe_name = os.path.basename(f.filename)
-                        dest = os.path.join(upload_dir, safe_name)
-                        f.save(dest)
-                        try:
-                            metadata = self.file_detector.analyze_file_metadata(dest)
-                            analyzed.append(metadata)
-                        except Exception as e:
-                            analyzed.append({
-                                'file_path': dest,
-                                'file_type': 'error',
-                                'file_size': 0,
-                                'error': f'Analysis failed: {type(e).__name__}: {e}'
-                            })
+                if not analyzed:
+                    self._remove_upload_dirs([upload_dir])
+                    return jsonify({
+                        'success': False,
+                        'error': 'No valid files uploaded',
+                    }), 400
 
-                self._set_files(analyzed)
+                self._set_files(analyzed, upload_dirs=[upload_dir])
                 return jsonify(_clean_results({
                     'success': True,
                     'files': analyzed,
                     'count': len(analyzed)
                 }))
             except Exception:
+                if upload_dir:
+                    self._remove_upload_dirs([upload_dir])
                 logger.exception('Error in /api/upload')
-                return jsonify({'success': False, 'error': 'Server error processing upload'})
+                return jsonify({
+                    'success': False,
+                    'error': 'Server error processing upload',
+                }), 500
 
         @self.app.route('/api/analyze_folder', methods=['POST'])
         def analyze_folder():
@@ -400,19 +562,19 @@ class ExternalFileDetectionWebGUI:
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'success': False, 'error': 'Invalid request data'})
+                    return _error_response('Invalid request data', 400)
                     
                 folder_path = data.get('folder')
                 
                 if not folder_path:
-                    return jsonify({'success': False, 'error': 'No folder provided'})
+                    return _error_response('No folder provided', 400)
                 
                 # Validate and sanitize folder path
                 folder_path = _validate_path(folder_path, root_dir=self._root_dir, allow_files=False, allow_dirs=True)
                 
                 # Scan directory
                 scanned = self.file_detector.scan_directory(folder_path)
-                self._set_files(scanned)
+                self._set_files(scanned, upload_dirs=[])
                 
                 return jsonify({
                     'success': True,
@@ -420,40 +582,31 @@ class ExternalFileDetectionWebGUI:
                     'count': len(scanned)
                 })
                 
-            except (ValueError, PermissionError):
-                return jsonify({
-                    'success': False, 
-                    'error': 'Folder not accessible'
-                })
+            except ValueError:
+                return _error_response('Folder not accessible', 400)
+            except PermissionError:
+                return _error_response('Folder not accessible', 403)
             except Exception:
                 logger.exception('Error in /api/analyze_folder')
-                return jsonify({'success': False, 'error': 'Server error processing request'})
+                return _error_response('Server error processing request', 500)
                 
         @self.app.route('/api/preview/<path:file_path>')
         def preview_file(file_path):
             """Get file preview."""
             try:
-                # Flask automatically decodes the path parameter
-                file_path = unquote(file_path)
-                # Flask <path:> converter may strip leading '/' from absolute paths
-                if not os.path.isabs(file_path):
-                    file_path = '/' + file_path
+                file_path = _decode_route_path(file_path)
                 
-                # Find file in current session files
-                file_data = None
-                for f in self._get_files():
-                    if f['file_path'] == file_path:
-                        file_data = f
-                        break
+                file_data = self._find_file_data(file_path)
                         
                 if not file_data:
-                    return jsonify({'success': False, 'error': 'File not found in current analysis'})
+                    return _error_response(
+                        'File not found in current analysis', 404
+                    )
                     
                 if 'error' in file_data:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Cannot preview file with errors'
-                    })
+                    return _error_response(
+                        'Cannot preview file with errors', 422
+                    )
                 
                 preview_content = self._generate_preview_content(file_data)
                 
@@ -465,16 +618,13 @@ class ExternalFileDetectionWebGUI:
                 
             except Exception:
                 logger.exception('Error in /api/preview')
-                return jsonify({'success': False, 'error': 'Server error generating preview'})
+                return _error_response('Server error generating preview', 500)
                 
         @self.app.route('/api/sql_ddl/<path:file_path>')
         def get_sql_ddl(file_path):
             """Get SQL DDL for a file."""
             try:
-                file_path = unquote(file_path)
-                # Flask <path:> converter may strip leading '/' from absolute paths
-                if not os.path.isabs(file_path):
-                    file_path = '/' + file_path
+                file_path = _decode_route_path(file_path)
                 data_source = request.args.get('data_source', 'MyDataSource')
                 schema_name = request.args.get('schema', 'dbo')
                 target_platform = request.args.get('target_platform', 'sql_server_2022')
@@ -486,43 +636,52 @@ class ExternalFileDetectionWebGUI:
                     try:
                         schema_overrides = json.loads(schema_overrides_raw)
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        return _error_response(
+                            'schema_overrides must be valid JSON', 400
+                        )
+                    if not isinstance(schema_overrides, dict):
+                        return _error_response(
+                            'schema_overrides must be a JSON object', 400
+                        )
                 
-                # Find file in current session files
-                file_data = None
-                for f in self._get_files():
-                    if f['file_path'] == file_path:
-                        file_data = f
-                        break
+                file_data = self._find_file_data(file_path)
                         
                 if not file_data:
-                    return jsonify({'success': False, 'error': 'File not found in current analysis'})
+                    return _error_response(
+                        'File not found in current analysis', 404
+                    )
                     
                 if 'error' in file_data:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Cannot generate SQL DDL for file with errors'
-                    })
+                    return _error_response(
+                        'Cannot generate SQL DDL for file with errors', 422
+                    )
 
                 # Apply schema overrides if provided
                 gen_metadata = dict(file_data)
                 if schema_overrides and gen_metadata.get('schema'):
                     new_schema = []
-                    new_nullable = list(gen_metadata.get('nullable_columns') or [])
+                    original_nullable = set(
+                        gen_metadata.get('nullable_columns') or []
+                    )
+                    new_nullable = []
                     for col_name, col_type in gen_metadata['schema']:
                         ov = schema_overrides.get(col_name, {})
+                        if not isinstance(ov, dict):
+                            return _error_response(
+                                f'Override for {col_name} must be an object',
+                                400,
+                            )
                         # Skip excluded columns
                         if ov.get('excluded'):
                             continue
                         new_name = ov.get('colName', col_name)
                         new_type = col_type  # keep original detected type
                         new_schema.append((new_name, new_type))
-                        # Handle nullable override
-                        if 'nullable' in ov:
-                            if ov['nullable'] and new_name not in new_nullable:
-                                new_nullable.append(new_name)
-                            elif not ov['nullable'] and new_name in new_nullable:
-                                new_nullable.remove(new_name)
+                        is_nullable = ov.get(
+                            'nullable', col_name in original_nullable
+                        )
+                        if is_nullable:
+                            new_nullable.append(new_name)
                         # Store SQL type override
                         if 'sqlType' in ov:
                             gen_metadata.setdefault('sql_type_overrides', {})[new_name] = ov['sqlType']
@@ -534,7 +693,9 @@ class ExternalFileDetectionWebGUI:
                     gen_metadata,
                     table_name=table_name,
                     data_source=data_source,
-                    location=os.path.basename(file_data['file_path']),
+                    location=file_data.get(
+                        'file_name', os.path.basename(file_data['file_path'])
+                    ),
                     schema_name=schema_name,
                     target_platform=target_platform,
                     storage_url=storage_url,
@@ -546,27 +707,24 @@ class ExternalFileDetectionWebGUI:
                     'statements': all_stmts
                 })
 
-            except Exception as e:
-                return jsonify({'success': False, 'error': f'Server error generating SQL DDL: {e}'})
+            except (TypeError, ValueError) as e:
+                return _error_response(str(e), 400)
+            except Exception:
+                logger.exception('Error in /api/sql_ddl')
+                return _error_response('Server error generating SQL DDL', 500)
                 
         @self.app.route('/api/file_details/<path:file_path>')
         def get_file_details(file_path):
             """Get detailed file information."""
             try:
-                file_path = unquote(file_path)
-                # Flask <path:> converter may strip leading '/' from absolute paths
-                if not os.path.isabs(file_path):
-                    file_path = '/' + file_path
+                file_path = _decode_route_path(file_path)
                 
-                # Find file in current session files
-                file_data = None
-                for f in self._get_files():
-                    if f['file_path'] == file_path:
-                        file_data = f
-                        break
+                file_data = self._find_file_data(file_path)
                         
                 if not file_data:
-                    return jsonify({'success': False, 'error': 'File not found in current analysis'})
+                    return _error_response(
+                        'File not found in current analysis', 404
+                    )
                 
                 return jsonify({
                     'success': True,
@@ -575,25 +733,37 @@ class ExternalFileDetectionWebGUI:
                 
             except Exception:
                 logger.exception('Error in /api/file_details')
-                return jsonify({'success': False, 'error': 'Server error retrieving file details'})
+                return _error_response(
+                    'Server error retrieving file details', 500
+                )
 
         @self.app.route('/api/preview_table/<path:file_path>')
         def preview_table(file_path):
             """Return tabular preview data (columns + rows) for the file."""
             try:
-                file_path = unquote(file_path)
-                # Flask <path:> converter may strip leading '/' from absolute paths
-                if not os.path.isabs(file_path):
-                    file_path = '/' + file_path
+                file_path = _decode_route_path(file_path)
                 # Validate first
-                safe_path = _validate_path(file_path, root_dir=self._root_dir, allow_files=True, allow_dirs=True)
-                rows = min(int(request.args.get('rows', 100)), 10000)
+                file_data = self._find_file_data(file_path)
+                if not file_data:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found in current analysis',
+                    }), 404
+                safe_path = self._validate_file_data_path(
+                    file_data, allow_dirs=True
+                )
+                rows = max(
+                    1, min(int(request.args.get('rows', 100)), 10000)
+                )
                 data = self.file_detector.get_preview_data(safe_path, max_rows=rows)
                 return jsonify(_clean_results({'success': True, **data}))
-            except (ValueError, PermissionError) as e:
-                return jsonify({'success': False, 'error': str(e)})
-            except Exception as e:
-                return jsonify({'success': False, 'error': f'Preview error: {e}'})
+            except ValueError as e:
+                return _error_response(str(e), 400)
+            except PermissionError as e:
+                return _error_response(str(e), 403)
+            except Exception:
+                logger.exception('Error in /api/preview_table')
+                return _error_response('Server error generating preview', 500)
 
         @self.app.route('/api/analyze_file', methods=['POST'])
         def analyze_single_file():
@@ -601,10 +771,20 @@ class ExternalFileDetectionWebGUI:
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'success': False, 'error': 'Invalid request'})
+                    return _error_response('Invalid request', 400)
                 file_path = data.get('file_path', '')
                 data_source = data.get('data_source', 'MyDataSource')
-                safe_path = _validate_path(file_path, root_dir=self._root_dir, allow_files=True, allow_dirs=True)
+                table_type = (
+                    self._table_file_type(file_path)
+                    if os.path.isdir(file_path)
+                    else None
+                )
+                safe_path = _validate_path(
+                    file_path,
+                    root_dir=self._root_dir,
+                    allow_files=True,
+                    allow_dirs=table_type is not None,
+                )
                 metadata = self.file_detector.analyze_file_metadata(safe_path)
                 statements = self.detector_app.sql_generator.generate_all_statements(
                     metadata, data_source=data_source
@@ -619,10 +799,13 @@ class ExternalFileDetectionWebGUI:
                     current.append(metadata)
                 self._set_files(current)
                 return jsonify({'success': True, 'metadata': metadata, 'statements': statements})
-            except (ValueError, PermissionError) as e:
-                return jsonify({'success': False, 'error': str(e)})
-            except Exception as e:
-                return jsonify({'success': False, 'error': f'Analysis error: {e}'})
+            except ValueError as e:
+                return _error_response(str(e), 400)
+            except PermissionError as e:
+                return _error_response(str(e), 403)
+            except Exception:
+                logger.exception('Error in /api/analyze_file')
+                return _error_response('Server error analyzing file', 500)
 
         # ---- Routes consolidated from web_ui.py ----
 
@@ -637,41 +820,59 @@ class ExternalFileDetectionWebGUI:
             if 'files' not in request.files:
                 return jsonify({'error': 'No files uploaded'}), 400
 
-            files = request.files.getlist('files')
-            data_source = request.form.get('data_source', '')
-            results = []
+            upload_dir = None
+            try:
+                analyzed, upload_dir = self._analyze_uploads(
+                    request.files.getlist('files')
+                )
+                if not analyzed:
+                    self._remove_upload_dirs([upload_dir])
+                    return _error_response('No valid files uploaded', 400)
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                for uploaded_file in files:
-                    if uploaded_file.filename:
-                        safe_name = Path(uploaded_file.filename).name
-                        temp_path = os.path.join(temp_dir, safe_name)
-                        uploaded_file.save(temp_path)
-
-                        try:
-                            metadata = self.file_detector.analyze_file_metadata(temp_path)
-                            table_name = self.detector_app._generate_table_name(safe_name)
-                            ddl = self.sql_generator.generate_complete_ddl(
-                                metadata, table_name,
-                                data_source if data_source else None,
-                                uploaded_file.filename,
-                            )
-                            clean_metadata = _clean_results(metadata)
-                            results.append({
-                                'file_name': uploaded_file.filename,
-                                'metadata': clean_metadata,
-                                'sql_ddl': ddl,
-                                'table_name': table_name,
-                                'success': True,
-                            })
-                        except Exception as e:
-                            results.append({
-                                'file_name': uploaded_file.filename,
-                                'error': str(e),
-                                'success': False,
-                            })
-
-            return jsonify({'results': results, 'total': len(results)})
+                self._set_files(analyzed, upload_dirs=[upload_dir])
+                data_source = request.form.get('data_source', '')
+                results = []
+                for metadata in analyzed:
+                    file_name = metadata.get('file_name', 'upload')
+                    if 'error' in metadata:
+                        results.append({
+                            'file_name': file_name,
+                            'error': metadata['error'],
+                            'success': False,
+                        })
+                        continue
+                    try:
+                        table_name = self.detector_app._generate_table_name(
+                            file_name
+                        )
+                        ddl = self.sql_generator.generate_complete_ddl(
+                            metadata,
+                            table_name,
+                            data_source or None,
+                            file_name,
+                        )
+                        results.append({
+                            'file_name': file_name,
+                            'metadata': _clean_results(metadata),
+                            'sql_ddl': ddl,
+                            'table_name': table_name,
+                            'success': True,
+                        })
+                    except Exception as e:
+                        results.append({
+                            'file_name': file_name,
+                            'error': str(e),
+                            'success': False,
+                        })
+                return jsonify({
+                    'results': results,
+                    'total': len(results),
+                })
+            except Exception:
+                if upload_dir:
+                    self._remove_upload_dirs([upload_dir])
+                logger.exception('Error in /api/analyze-upload')
+                return _error_response('Server error processing upload', 500)
 
         @self.app.route('/api/analyze-path', methods=['POST'])
         def analyze_path():
@@ -778,114 +979,52 @@ class ExternalFileDetectionWebGUI:
 
             fmt = data.get('format', 'sql')
             content = data['content']
+            if fmt not in {'sql', 'json'}:
+                return jsonify({'error': 'Unsupported export format'}), 400
+            if not isinstance(content, str):
+                return jsonify({'error': 'Export content must be text'}), 400
 
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix=f'.{fmt}', delete=False, prefix='efd_export_',
-            ) as f:
-                f.write(content)
-                temp_path = f.name
-
-            @self.app.after_request
-            def _cleanup_export(response):
-                """Remove temp export file after response is sent."""
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-                # Unregister this one-shot handler
-                self.app.after_request_funcs.get(None, []).remove(_cleanup_export)
-                return response
+            payload = io.BytesIO(content.encode('utf-8'))
 
             return send_file(
-                temp_path, as_attachment=True,
+                payload, as_attachment=True,
                 download_name=f'external_file_detection.{fmt}',
                 mimetype='text/plain' if fmt == 'sql' else 'application/json',
             )
 
     def _generate_preview_content(self, file_data: Dict[str, Any]) -> str:
         """Generate preview content for a file (legacy text fallback)."""
-        file_path = file_data['file_path']
         file_type = file_data.get('file_type', 'unknown')
         encoding = file_data.get('encoding') or 'utf-8'
         if encoding == 'binary':
             encoding = 'utf-8'
 
         try:
-            # Validate file path to prevent path injection
-            allow_dirs = file_type in ('delta',)
-            file_path = _validate_path(file_path, root_dir=self._root_dir, allow_files=True, allow_dirs=allow_dirs)
+            allow_dirs = file_type in ('delta', 'iceberg')
+            file_path = self._validate_file_data_path(
+                file_data, allow_dirs=allow_dirs
+            )
 
             if file_type in ('csv', 'text', 'json'):
-                # Show text preview using detected encoding
                 with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-                    content = []
-                    for i, line in enumerate(f):
-                        if i >= 50:
-                            content.append("... (truncated)")
-                            break
-                        content.append(line.rstrip())
-                        if len(''.join(content)) > 5000:
-                            content.append("... (truncated)")
-                            break
-                return '\n'.join(content)
+                    content = f.read(5001)
+                if len(content) > 5000:
+                    return content[:5000] + '\n... (truncated)'
+                return content
 
-            elif file_type in ('parquet', 'delta'):
-                # Show metadata + sample data
-                try:
-                    import pyarrow.parquet as pq
-                    import pandas as pd
+            if file_type in ('parquet', 'delta', 'iceberg', 'excel'):
+                preview = self.file_detector.get_preview_data(
+                    file_path, max_rows=10
+                )
+                if preview.get('error'):
+                    return f"Error loading preview: {preview['error']}"
+                return json.dumps(_clean_results(preview), indent=2)
 
-                    if file_type == 'delta':
-                        try:
-                            from deltalake import DeltaTable  # type: ignore
-                            dt = DeltaTable(file_path)
-                            dm = dt.metadata()
-                            schema = dt.schema()
-                            pv = [
-                                f'Delta Table: {os.path.basename(file_path)}',
-                                f'Version    : {dt.version()}',
-                                f'Partitions : {dm.partition_columns or "none"}',
-                                '',
-                                'Schema:',
-                            ]
-                            for f2 in schema.fields:
-                                pv.append(f'  {f2.name}: {f2.type}{"  (nullable)" if f2.nullable else ""}')
-                            try:
-                                df = dt.to_pandas().head(10)
-                                pv += ['', 'Sample Data (first 10 rows):', df.to_string()]
-                            except Exception:
-                                pv.append('(Could not load sample data)')
-                            return '\n'.join(pv)
-                        except ImportError:
-                            pass  # fall through to parquet path
-
-                    parquet_file = pq.ParquetFile(file_path)
-                    pv = [
-                        f'Parquet File: {os.path.basename(file_path)}',
-                        f'Rows        : {parquet_file.metadata.num_rows:,}',
-                        f'Row groups  : {parquet_file.metadata.num_row_groups}',
-                        f'Columns     : {len(parquet_file.schema)}',
-                        '',
-                        'Schema:',
-                    ]
-                    for field in parquet_file.schema:
-                        pv.append(f'  {field.name}: {field.type}')
-                    try:
-                        df = parquet_file.read().to_pandas().head(10)
-                        pv += ['', 'Sample Data (first 10 rows):', df.to_string()]
-                    except Exception:
-                        pv.append('(Could not load sample data)')
-                    return '\n'.join(pv)
-                    
-                except Exception:
-                    return "Error reading Parquet file"
-                    
-            else:
-                return f"Preview not available for {file_type} files"
-                
+            return f"Preview not available for {file_type} files"
         except (ValueError, PermissionError):
             return "File not accessible"
         except Exception:
+            logger.exception('Error generating legacy preview')
             return "Error loading preview"
     
     @staticmethod
@@ -904,6 +1043,7 @@ class ExternalFileDetectionWebGUI:
         
     def run(self, host='127.0.0.1', port=5000, debug=False):
         """Run the web application."""
+        _validate_bind_host(host)
         # Ensure templates directory exists
         templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
         os.makedirs(templates_dir, exist_ok=True)
