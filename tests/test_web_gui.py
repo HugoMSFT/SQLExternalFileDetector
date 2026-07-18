@@ -313,7 +313,9 @@ class TestWebGUI(unittest.TestCase):
                 'encoding': 'binary',
             })
 
-        get_preview.assert_called_once_with(parquet_path, max_rows=10)
+        get_preview.assert_called_once_with(
+            os.path.realpath(os.path.abspath(parquet_path)), max_rows=10
+        )
         self.assertIn('"rows"', content)
         self.assertIn('[\n      1\n    ]', content)
 
