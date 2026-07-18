@@ -261,7 +261,9 @@ class SQLGenerator:
     def generate_create_table(self, metadata: Dict[str, Any],
                               table_name: str = None,
                               schema_name: str = 'dbo',
-                              target_platform: str = 'sql_server_2022') -> str:
+                              target_platform: str = 'sql_server_2022',
+                              storage_url: str = None,
+                              data_source: str = 'MyDataSource') -> str:
         """
         Generate a standard CREATE TABLE statement.
 
@@ -320,26 +322,71 @@ class SQLGenerator:
         # Append sample data as comments
         lines += self._format_sample_rows(metadata)
 
-        # Append a commented-out INSERT INTO...SELECT FROM OPENROWSET as a quick-start
-        file_name = metadata.get('file_name', metadata['file_path'])
-        file_type = metadata.get('file_type', 'csv')
-        blob_path = _quote_literal(f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
-        format_kw = _format_keyword(file_type)
-
-        lines += [
-            '',
-            '-- ====================================================================',
-            '-- QUICK LOAD: INSERT INTO from OPENROWSET  (uncomment & customise)',
-            '-- ====================================================================',
-            f'-- INSERT INTO [{_sql_comment(schema_name)}].[{_sql_comment(table_name)}]',
-            f'-- SELECT *',
-            f'-- FROM OPENROWSET(',
-            f'--     BULK \'{_sql_comment(blob_path)}\',',
-            f'--     FORMAT = \'{format_kw}\'',
-            f'-- ) AS src;',
-        ]
+        lines += self._create_table_quick_load(
+            metadata,
+            schema_name,
+            table_name,
+            target_platform,
+            storage_url,
+            data_source,
+        )
 
         return '\n'.join(lines)
+
+    def _create_table_quick_load(
+            self, metadata: Dict[str, Any], schema_name: str, table_name: str,
+            target_platform: str, storage_url: Optional[str],
+            data_source: str) -> List[str]:
+        """Build platform-specific quick-load guidance for CREATE TABLE."""
+        file_type = metadata.get('file_type', 'csv')
+        file_name = metadata.get('file_name', metadata['file_path'])
+        lines = [
+            '',
+            '-- ====================================================================',
+            '-- QUICK LOAD',
+            '-- ====================================================================',
+        ]
+
+        if file_type == 'json':
+            return lines + [
+                '-- JSON is not an OPENROWSET file format.',
+                '-- Use the JSON Functions tab for SINGLE_CLOB + OPENJSON.',
+            ]
+
+        if target_platform == 'sql_server_2019':
+            if file_type in {'csv', 'text'}:
+                return lines + [
+                    '-- Use the BULK INSERT tab for local or network CSV/text files.',
+                    '-- Cloud OPENROWSET file access requires SQL Server 2022 or later.',
+                ]
+            return lines + [
+                f'-- {file_type.upper()} file access is not available on SQL Server 2019.',
+                '-- Convert the source to CSV before loading.',
+            ]
+
+        if (
+            target_platform not in {'sql_server_2022', 'sql_server_2025'}
+            or file_type not in {'csv', 'text', 'parquet', 'delta'}
+        ):
+            return lines + [
+                '-- See the OPENROWSET tab for platform-specific loading syntax.',
+            ]
+
+        source_location, bulk_path = _sql_server_storage_parts(
+            storage_url, file_name, target_platform
+        )
+        return lines + [
+            '-- SQL Server object storage uses an external data source whose',
+            '-- LOCATION starts with adls://, abs://, or s3:// (not https://).',
+            f'-- Data source location: {_sql_comment(source_location)}',
+            f'-- INSERT INTO [{_sql_comment(schema_name)}].[{_sql_comment(table_name)}]',
+            '-- SELECT *',
+            '-- FROM OPENROWSET(',
+            f'--     BULK \'{_sql_comment(_quote_literal(bulk_path))}\',',
+            f'--     DATA_SOURCE = \'{_sql_comment(_quote_literal(data_source))}\',',
+            f'--     FORMAT = \'{_format_keyword(file_type)}\'',
+            '-- ) AS src;',
+        ]
 
     # ------------------------------------------------------------------
     # BULK INSERT
@@ -358,7 +405,10 @@ class SQLGenerator:
             if target_platform == 'fabric_sql_db':
                 file_name = metadata.get('file_name', metadata.get('file_path', 'file.csv'))
                 detected_type = metadata.get('file_type', 'csv').upper()
-                blob_path = _quote_literal(f'https://<storage_account>.dfs.core.windows.net/<container>/<path>/{file_name}')
+                blob_path = _quote_literal(
+                    f'abfss://<container>@<storage_account>.dfs.core.windows.net/'
+                    f'<path>/{file_name}'
+                )
                 if not table_name:
                     base = os.path.splitext(os.path.basename(metadata.get('file_path', 'file')))[0]
                     table_name = _clean_identifier(base)
@@ -1707,7 +1757,9 @@ class SQLGenerator:
 
         return {
             'create_table': self.generate_create_table(metadata, table_name, schema_name,
-                                                       target_platform=target_platform),
+                                                       target_platform=target_platform,
+                                                       storage_url=storage_url,
+                                                       data_source=data_source),
             'bulk_insert': self.generate_bulk_insert(metadata, table_name, schema_name,
                                                      target_platform=target_platform),
             'openrowset': self.generate_openrowset(metadata,
@@ -2253,8 +2305,10 @@ def _best_practices_delta(metadata: Dict[str, Any],
         '',
         '-- 3. SYNAPSE SERVERLESS QUERY',
         '--    SELECT TOP 100 *',
+        '--    -- MyDataSource LOCATION uses adls:// or abs://',
         '--    FROM OPENROWSET(',
-        '--        BULK \'https://<adls>.dfs.core.windows.net/<container>/<delta_path>/\',',
+        '--        BULK \'<delta_path>/\',',
+        '--        DATA_SOURCE = \'MyDataSource\',',
         '--        FORMAT = \'DELTA\'',
         '--    ) AS [result];',
         '',
@@ -2294,7 +2348,8 @@ def _best_practices_json(size_mb: float) -> List[str]:
         '',
         '-- 3. SYNAPSE SERVERLESS — JSON via OPENROWSET + OPENJSON',
         '--    SELECT j.*',
-        '--    FROM OPENROWSET(BULK \'https://...\', FORMAT=\'CSV\',',
+        '--    FROM OPENROWSET(BULK \'abfss://<container>@<account>.dfs.core.windows.net/path\',',
+        '--        FORMAT=\'CSV\',',
         '--        FIELDTERMINATOR=\'0x0b\', FIELDQUOTE=\'0x0b\')',
         '--    WITH (json_doc NVARCHAR(MAX)) AS src',
         '--    CROSS APPLY OPENJSON(src.json_doc)',

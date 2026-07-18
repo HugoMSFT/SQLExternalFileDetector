@@ -196,6 +196,68 @@ def test_create_table_sql_server():
     assert 'CREATE TABLE [dbo].[tbl]' in sql
     assert 'DISTRIBUTION' not in sql
     assert 'HEAP' not in sql
+    assert "BULK 'https://" not in sql
+    assert 'adls://<container>@<storage_account>.dfs.core.windows.net' in sql
+
+
+def test_create_table_quick_load_uses_relative_adls_path():
+    """CREATE TABLE guidance uses DATA_SOURCE rather than a BULK HTTPS URL."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'parquet',
+        'file_path': 'sample.parquet',
+        'file_name': 'sample.parquet',
+        'schema': [('id', 'int64')],
+    }
+    sql = gen.generate_create_table(
+        meta,
+        'sample',
+        target_platform='sql_server_2025',
+        storage_url=(
+            'https://account.dfs.core.windows.net/'
+            'container/folder/sample.parquet'
+        ),
+        data_source='LakeDS',
+    )
+
+    assert "BULK 'folder/sample.parquet'" in sql
+    assert "DATA_SOURCE = 'LakeDS'" in sql
+    assert "FORMAT = 'PARQUET'" in sql
+    assert 'adls://container@account.dfs.core.windows.net' in sql
+    assert "BULK 'https://" not in sql
+
+
+def test_create_table_quick_load_rejects_sql_server_2019_parquet():
+    """SQL Server 2019 CREATE TABLE guidance does not fake Parquet access."""
+    gen = SQLGenerator()
+    sql = gen.generate_create_table(
+        {
+            'file_type': 'parquet',
+            'file_path': 'sample.parquet',
+            'schema': [('id', 'int64')],
+        },
+        target_platform='sql_server_2019',
+    )
+
+    assert 'not available on SQL Server 2019' in sql
+    assert 'FROM OPENROWSET(' not in sql
+
+
+def test_create_table_quick_load_routes_json_to_openjson():
+    """JSON CREATE TABLE guidance does not emit FORMAT=JSON or CSV."""
+    gen = SQLGenerator()
+    sql = gen.generate_create_table(
+        {
+            'file_type': 'json',
+            'file_path': 'sample.json',
+            'schema': [('id', 'int64')],
+        },
+        target_platform='sql_server_2022',
+    )
+
+    assert 'JSON Functions tab' in sql
+    assert 'FORMAT =' not in sql
+    assert 'FROM OPENROWSET(' not in sql
 
 
 def test_create_table_azure_sql():
@@ -667,6 +729,8 @@ def test_all_statements_use_relative_external_table_location():
     assert "LOCATION = 'folder/sample.parquet'" in (
         statements['create_external_table']
     )
+    assert "BULK 'folder/sample.parquet'" in statements['create_table']
+    assert "BULK 'https://" not in statements['create_table']
     assert 'TYPE = HADOOP' not in statements['credential_setup']
 
 

@@ -1145,9 +1145,12 @@
             const acct = (document.getElementById('inpStorageAccount') || {}).value || '';
             const cont = (document.getElementById('inpStorageContainer') || {}).value || '';
             const path = (document.getElementById('inpStoragePath') || {}).value || '';
+            const platform = document.getElementById('selPlatform').value;
             let url = '';
             if (acct) {
-                url = 'adls://';
+                url = platform === 'fabric_sql_db' || platform === 'sql_server_2019'
+                    ? 'abfss://'
+                    : 'adls://';
                 if (cont) url += cont + '@';
                 url += acct + '.dfs.core.windows.net';
                 if (path) url += '/' + path.replace(/^\//, '');
