@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from typing import Dict, List, Any
 
 from .file_detector import FileDetector
-from .sql_generator import SQLGenerator
+from .sql_generator import SQLGenerator, _sql_server_storage_parts
 from .storage_handlers import StorageHandler, StorageFactory
 
 logger = logging.getLogger(__name__)
@@ -233,7 +233,8 @@ class ExternalFileDetectorApp:
         return results
     
     def generate_data_source_ddl(self, data_source_name: str, storage_type: str,
-                                location: str, credential: str = None) -> str:
+                                location: str, credential: str = None,
+                                target_platform: str = 'sql_server_2022') -> str:
         """
         Generate CREATE EXTERNAL DATA SOURCE statement.
         
@@ -242,29 +243,40 @@ class ExternalFileDetectorApp:
             storage_type: Type of storage (S3, Azure, etc.)
             location: Base location/URL
             credential: Optional credential name
+            target_platform: SQL Server target version
             
         Returns:
             SQL CREATE EXTERNAL DATA SOURCE statement
         """
         # Sanitize inputs to prevent SQL injection
         safe_ds_name = self._sanitize_sql_identifier(data_source_name)
-        safe_location = location.replace("'", "''")
+        if target_platform not in self.sql_generator.PLATFORMS:
+            target_platform = 'sql_server_2022'
+
+        storage_kind = storage_type.lower()
+        if storage_kind == 'azure':
+            normalized_location, _ = _sql_server_storage_parts(
+                location, '<file>', target_platform
+            )
+        elif storage_kind == 's3':
+            if target_platform == 'sql_server_2019':
+                raise ValueError(
+                    'S3-compatible external data sources require '
+                    'SQL Server 2022 or later'
+                )
+            normalized_location = location
+        else:
+            normalized_location = location
+        safe_location = normalized_location.replace("'", "''")
         
         sql_parts = [f"CREATE EXTERNAL DATA SOURCE [{safe_ds_name}]"]
         sql_parts.append("WITH (")
         
         options = []
         
-        if storage_type.lower() == 's3':
-            options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{safe_location}'")
-        elif storage_type.lower() == 'azure':
-            options.append(f"    TYPE = BLOB_STORAGE")
-            options.append(f"    LOCATION = '{safe_location}'")
-        else:
-            # Generic/local
-            options.append(f"    TYPE = HADOOP")
-            options.append(f"    LOCATION = '{safe_location}'")
+        if target_platform == 'sql_server_2019':
+            options.append("    TYPE = HADOOP")
+        options.append(f"    LOCATION = '{safe_location}'")
         
         if credential:
             safe_credential = self._sanitize_sql_identifier(credential)

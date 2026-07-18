@@ -936,6 +936,7 @@ class ExternalFileDetectionWebGUI:
                 ddl = self.detector_app.generate_data_source_ddl(
                     data['name'], data['storage_type'],
                     data['location'], data.get('credential'),
+                    data.get('target_platform', 'sql_server_2022'),
                 )
                 return jsonify({'sql_ddl': ddl})
             except Exception as e:

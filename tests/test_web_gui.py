@@ -47,6 +47,7 @@ class TestWebGUI(unittest.TestCase):
         self.assertIn(b'External File Detection Tool', response.data)
         self.assertIn(b'Best Practices', response.data)
         self.assertIn(b'Schema Editor', response.data)
+        self.assertIn(b"adls://", response.data)
 
     def test_initial_path_api(self):
         """Test /api/initial_path returns a valid directory."""
@@ -168,6 +169,31 @@ class TestWebGUI(unittest.TestCase):
         data2 = json.loads(resp2.data)
         self.assertTrue(data2['success'])
         self.assertIn('statements', data2)
+
+    def test_data_source_api_uses_modern_adls_connector(self):
+        """SQL Server 2022 Azure data sources use adls:// without TYPE."""
+        response = self.client.post(
+            '/api/generate-data-source',
+            json={
+                'name': 'LakeDS',
+                'storage_type': 'azure',
+                'location': (
+                    'https://account.dfs.core.windows.net/'
+                    'container/folder/sample.parquet'
+                ),
+                'credential': 'LakeCredential',
+                'target_platform': 'sql_server_2022',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        ddl = json.loads(response.data)['sql_ddl']
+        self.assertIn(
+            "LOCATION = 'adls://container@account.dfs.core.windows.net'",
+            ddl,
+        )
+        self.assertNotIn('TYPE = HADOOP', ddl)
+        self.assertNotIn("LOCATION = 'https://", ddl)
 
     def test_file_details_api(self):
         """Test file details API via analyze-first flow."""

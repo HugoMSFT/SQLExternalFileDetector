@@ -44,6 +44,11 @@ Unsupported statements are returned as explanatory SQL comments with practical
 alternatives. For example, exposed targets do not support a JSON external file
 format, so JSON output recommends `OPENROWSET` with `OPENJSON` instead.
 
+SQL Server 2019 does not generate Parquet or Delta file access. SQL Server 2022
+and later generate Parquet and Delta `OPENROWSET`/external-table scripts against
+supported object storage. Azure data sources use `abs://` for Blob Storage or
+`adls://` for ADLS Gen2 without the retired `TYPE = HADOOP` option.
+
 ## Installation
 
 Python 3.9 or newer is required.

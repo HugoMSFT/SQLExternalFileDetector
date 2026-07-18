@@ -2,8 +2,9 @@
 
 import os
 import re
-from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -18,6 +19,68 @@ class ExternalFileFormatConfig:
     first_row: int = 1
     data_compression: Optional[str] = None
     serde_method: Optional[str] = None
+
+
+def _sql_server_storage_parts(storage_url: Optional[str], file_name: str,
+                              target_platform: str) -> Tuple[str, str]:
+    """Return a SQL Server external data source location and relative file path."""
+    fallback_name = os.path.basename(file_name.replace('\\', '/')) or '<file>'
+    is_2019 = target_platform == 'sql_server_2019'
+    default_location = (
+        'wasbs://<container>@<storage_account>.blob.core.windows.net'
+        if is_2019
+        else 'adls://<container>@<storage_account>.dfs.core.windows.net'
+    )
+    default_path = f'<path>/{fallback_name}'
+
+    if not storage_url:
+        return default_location, default_path
+
+    normalized = str(storage_url).strip().replace('\\', '/')
+    parsed = urlparse(normalized)
+    scheme = parsed.scheme.lower()
+    host = parsed.netloc
+    path = parsed.path.strip('/')
+
+    scheme_map = {
+        'abs': 'wasbs' if is_2019 else 'abs',
+        'wasb': 'wasbs' if is_2019 else 'abs',
+        'wasbs': 'wasbs' if is_2019 else 'abs',
+        'adls': 'abfss' if is_2019 else 'adls',
+        'abfs': 'abfss' if is_2019 else 'adls',
+        'abfss': 'abfss' if is_2019 else 'adls',
+    }
+    if scheme in scheme_map and host:
+        target_scheme = scheme_map[scheme]
+        relative_path = path
+        if '@' not in host and path:
+            container, separator, remainder = path.partition('/')
+            host = f'{container}@{host}'
+            relative_path = remainder if separator else ''
+        return (
+            f'{target_scheme}://{host}',
+            relative_path or fallback_name,
+        )
+
+    if scheme == 'https' and host:
+        container, separator, remainder = path.partition('/')
+        lower_host = host.lower()
+        if lower_host.endswith('.dfs.core.windows.net'):
+            target_scheme = 'abfss' if is_2019 else 'adls'
+        elif lower_host.endswith('.blob.core.windows.net'):
+            target_scheme = 'wasbs' if is_2019 else 'abs'
+        else:
+            return default_location, path or fallback_name
+        source_host = f'{container}@{host}' if container else host
+        return (
+            f'{target_scheme}://{source_host}',
+            remainder if separator and remainder else fallback_name,
+        )
+
+    if scheme == 's3' and host and not is_2019:
+        return f's3://{host}', path or fallback_name
+
+    return default_location, normalized.lstrip('/') or fallback_name
 
 
 class SQLGenerator:
@@ -153,9 +216,12 @@ class SQLGenerator:
     # targets exposed by this application.
     EXTERNAL_FORMAT_PLATFORMS = {
         'DELIMITEDTEXT': frozenset(PLATFORMS),
-        'PARQUET': frozenset(PLATFORMS),
+        'PARQUET': frozenset({
+            'sql_server_2022', 'sql_server_2025',
+            'azure_sql_db', 'azure_sql_mi', 'fabric_sql_db',
+        }),
         'DELTA': frozenset({
-            'sql_server_2022', 'sql_server_2025', 'azure_sql_db',
+            'sql_server_2022', 'sql_server_2025',
         }),
         'ORC': frozenset({'sql_server_2019'}),
         'RCFILE': frozenset({'sql_server_2019'}),
@@ -415,6 +481,7 @@ class SQLGenerator:
     def generate_openrowset(self, metadata: Dict[str, Any],
                             storage_url: str = None,
                             credential_name: str = 'MyStorageCredential',
+                            data_source: str = 'MyDataSource',
                             target_platform: str = 'sql_server_2022') -> str:
         """
         Generate OPENROWSET queries.
@@ -458,6 +525,23 @@ class SQLGenerator:
             f'-- ====================================================================',
             f'',
         ]
+
+        if (
+            target_platform.startswith('sql_server_')
+            and file_type in {'parquet', 'delta'}
+        ):
+            if target_platform == 'sql_server_2019':
+                format_label = 'Parquet' if file_type == 'parquet' else 'Delta Lake'
+                lines += [
+                    f'-- {format_label} file access is not available on SQL Server 2019.',
+                    f'-- SQL Server 2022 or later is required for '
+                    f'OPENROWSET FORMAT = \'{file_type.upper()}\'.',
+                    f'-- Convert the data to CSV for SQL Server 2019.',
+                ]
+                return '\n'.join(lines)
+            return self._generate_openrowset_sql_server_object_storage(
+                metadata, lines, storage_url, data_source, target_platform
+            )
 
         # For on-prem SQL Server, generate OPENROWSET(BULK 'local_path') syntax
         if is_local and not is_cloud:
@@ -659,6 +743,9 @@ class SQLGenerator:
             ]
         elif file_type == 'json':
             lines += [
+                f'-- {_sql_comment(self.PLATFORM_LABELS[target_platform])} does not support',
+                f'-- FORMAT = \'JSON\' or JSON external tables. This workaround',
+                f'-- loads JSON as text and parses it with OPENJSON.',
                 f'-- ---- JSON via SINGLE_CLOB + OPENJSON  (SQL Server 2016+) ---------------',
                 f'DECLARE @json NVARCHAR(MAX);',
                 f'SELECT @json = BulkColumn',
@@ -677,20 +764,43 @@ class SQLGenerator:
                 lines.append(f';')
         elif file_type == 'parquet':
             lines += [
-                f'-- SQL Server does not natively read Parquet files via OPENROWSET.',
-                f'-- Options:',
-                f'--   1. Use PolyBase with CREATE EXTERNAL TABLE (see EXT TABLE tab)',
-                f'--   2. Convert to CSV before loading',
-                f'--   3. Use Python/R integration (sp_execute_external_script)',
+                f'-- Parquet OPENROWSET requires SQL Server 2022 or later and',
+                f'-- a supported object storage data source (ABS, ADLS, or S3).',
             ]
         elif file_type == 'delta':
             lines += [
-                f'-- SQL Server does not natively read Delta Lake files.',
-                f'-- Options:',
-                f'--   1. Use Azure Synapse Serverless with FORMAT = \'DELTA\'',
-                f'--   2. Convert to Parquet/CSV before loading',
+                f'-- Delta OPENROWSET requires SQL Server 2022 or later and',
+                f'-- a supported object storage data source (ABS, ADLS, or S3).',
             ]
 
+        return '\n'.join(lines)
+
+    def _generate_openrowset_sql_server_object_storage(
+            self, metadata: Dict[str, Any], lines: List[str],
+            storage_url: Optional[str], data_source: str,
+            target_platform: str) -> str:
+        """Generate SQL Server 2022+ OPENROWSET for Parquet or Delta storage."""
+        file_type = metadata.get('file_type', 'parquet')
+        file_name = metadata.get('file_name', metadata['file_path'])
+        source_location, bulk_path = _sql_server_storage_parts(
+            storage_url, file_name, target_platform
+        )
+        format_keyword = file_type.upper()
+        source_name = _quote_literal(data_source)
+
+        lines += [
+            f'-- SQL Server 2022+ reads {format_keyword} from ABS, ADLS Gen2,',
+            f'-- or S3-compatible object storage. The external data source',
+            f'-- LOCATION must use abs://, adls://, or s3://, not https://.',
+            f'-- Data source location: {_sql_comment(source_location)}',
+            f'',
+            f'SELECT TOP (100) *',
+            f'FROM OPENROWSET(',
+            f'    BULK \'{_quote_literal(bulk_path)}\',',
+            f'    DATA_SOURCE = \'{source_name}\',',
+            f'    FORMAT = \'{format_keyword}\'',
+            f') AS [result];',
+        ]
         return '\n'.join(lines)
 
     def _generate_openrowset_blob_storage(self, metadata: Dict[str, Any],
@@ -862,7 +972,7 @@ class SQLGenerator:
             )
 
         sql_parts = [
-            f'-- CREATE EXTERNAL FILE FORMAT  (PolyBase / Synapse Dedicated or Serverless)',
+            f'-- CREATE EXTERNAL FILE FORMAT  (SQL Server external file access)',
             f'CREATE EXTERNAL FILE FORMAT [{format_name}]',
             f'WITH (',
             ',\n'.join(with_options),
@@ -1035,7 +1145,8 @@ class SQLGenerator:
     def generate_credential_setup(self, data_source: str = 'MyDataSource',
                                   file_format: str = 'ff_csv_format',
                                   metadata: Dict[str, Any] = None,
-                                  target_platform: str = 'sql_server_2022') -> str:
+                                  target_platform: str = 'sql_server_2022',
+                                  storage_url: str = None) -> str:
         """Generate prerequisite CREATE CREDENTIAL, CREATE EXTERNAL DATA SOURCE,
         and CREATE EXTERNAL FILE FORMAT statements."""
         if target_platform not in self.PLATFORMS:
@@ -1048,8 +1159,29 @@ class SQLGenerator:
                 'Use BULK INSERT or application-level data loading instead.')
 
         platform_label = self.PLATFORM_LABELS.get(target_platform, target_platform)
-        file_type = (metadata or {}).get('file_type', 'csv')
+        metadata = metadata or {}
+        config = self._determine_format_config(metadata)
+        if target_platform not in self.EXTERNAL_FORMAT_PLATFORMS.get(
+            config.format_type, frozenset()
+        ):
+            alternative = (
+                'Use OPENROWSET with SINGLE_CLOB and OPENJSON for JSON text.'
+                if config.format_type == 'JSON'
+                else 'SQL Server 2022 or later is required for this file format.'
+            )
+            return self._not_supported_message(
+                f'EXTERNAL DATA SOURCE SETUP ({config.format_type})',
+                target_platform,
+                alternative,
+            )
+
         data_source = _escape_identifier(data_source)
+        file_name = metadata.get(
+            'file_name', metadata.get('file_path', '<file>')
+        )
+        source_location, _ = _sql_server_storage_parts(
+            storage_url, file_name, target_platform
+        )
         lines = [
             f'-- ====================================================================',
             f'-- PREREQUISITE SETUP  ({_sql_comment(platform_label)})',
@@ -1062,39 +1194,48 @@ class SQLGenerator:
             f'    CREATE MASTER KEY ENCRYPTION BY PASSWORD = \'<StrongPassword!>\';',
             f'GO',
             f'',
-            f'-- 2. Database Scoped Credential',
-            f'--    Choose ONE authentication method and uncomment:',
-            f'',
-            f'-- Option A: Storage Account Key',
-            f'CREATE DATABASE SCOPED CREDENTIAL [cred_{data_source}]',
-            f'WITH',
-            f'    IDENTITY = \'Storage Account Key\',',
-            f'    SECRET   = \'<your_storage_account_key>\';',
-            f'GO',
-            f'',
-            f'-- Option B: Managed Identity (no secret needed)',
-            f'-- CREATE DATABASE SCOPED CREDENTIAL '
-            f'[cred_{_sql_comment(data_source)}]',
-            f'-- WITH IDENTITY = \'Managed Identity\';',
-            f'-- GO',
-            f'',
-            f'-- Option C: Shared Access Signature (SAS token)',
-            f'-- CREATE DATABASE SCOPED CREDENTIAL '
-            f'[cred_{_sql_comment(data_source)}]',
-            f'-- WITH',
-            f'--     IDENTITY = \'SHARED ACCESS SIGNATURE\',',
-            f'--     SECRET   = \'<SAS_token_without_leading_?>\';',
-            f'-- GO',
-            f'',
-            f'-- 3. External Data Source',
-            f'CREATE EXTERNAL DATA SOURCE [{data_source}]',
-            f'WITH (',
-            f'    TYPE     = HADOOP,                      -- Use BLOB_STORAGE for BULK INSERT with SAS',
-            f'    LOCATION = \'https://<storage_account>.dfs.core.windows.net/<container>\',',
-            f'    CREDENTIAL = [cred_{data_source}]',
-            f');',
-            f'GO',
         ]
+
+        if target_platform == 'sql_server_2019':
+            lines += [
+                f'-- 2. Database Scoped Credential (storage account key)',
+                f'CREATE DATABASE SCOPED CREDENTIAL [cred_{data_source}]',
+                f'WITH',
+                f'    IDENTITY = \'<storage_account_name>\',',
+                f'    SECRET   = \'<storage_account_key>\';',
+                f'GO',
+                f'',
+                f'-- 3. External Data Source',
+                f'-- SQL Server 2019 uses wasbs:// for Azure Blob Storage or',
+                f'-- abfss:// for ADLS Gen2 (CU11+) and requires TYPE = HADOOP.',
+                f'CREATE EXTERNAL DATA SOURCE [{data_source}]',
+                f'WITH (',
+                f'    TYPE = HADOOP,',
+                f'    LOCATION = \'{_quote_literal(source_location)}\',',
+                f'    CREDENTIAL = [cred_{data_source}]',
+                f');',
+                f'GO',
+            ]
+        else:
+            lines += [
+                f'-- 2. Database Scoped Credential (SAS token)',
+                f'CREATE DATABASE SCOPED CREDENTIAL [cred_{data_source}]',
+                f'WITH',
+                f'    IDENTITY = \'SHARED ACCESS SIGNATURE\',',
+                f'    SECRET   = \'<SAS_token_without_leading_?>\';',
+                f'GO',
+                f'',
+                f'-- 3. External Data Source',
+                f'-- SQL Server 2022+ infers the connector from LOCATION.',
+                f'-- Do not specify TYPE. Use abs:// for Azure Blob Storage,',
+                f'-- adls:// for ADLS Gen2, or s3:// for S3-compatible storage.',
+                f'CREATE EXTERNAL DATA SOURCE [{data_source}]',
+                f'WITH (',
+                f'    LOCATION = \'{_quote_literal(source_location)}\',',
+                f'    CREDENTIAL = [cred_{data_source}]',
+                f');',
+                f'GO',
+            ]
 
         return '\n'.join(lines)
 
@@ -1470,11 +1611,30 @@ class SQLGenerator:
 
         # Platform-specific loading recommendation
         load_methods = []
-        if self._supports('bulk_insert', target_platform):
+        if (
+            self._supports('bulk_insert', target_platform)
+            and file_type in {'csv', 'text'}
+        ):
             load_methods.append('BULK INSERT (high-speed batch loads)')
-        if self._supports('openrowset', target_platform):
+        openrowset_supported = (
+            file_type not in {'parquet', 'delta'}
+            or target_platform in {'sql_server_2022', 'sql_server_2025'}
+            or (
+                file_type == 'parquet'
+                and target_platform in {
+                    'azure_sql_db', 'azure_sql_mi', 'fabric_sql_db'
+                }
+            )
+        )
+        if self._supports('openrowset', target_platform) and openrowset_supported:
             load_methods.append('OPENROWSET (ad-hoc / exploratory queries)')
-        if self._supports('external_table', target_platform):
+        config = self._determine_format_config(metadata)
+        if (
+            self._supports('external_table', target_platform)
+            and target_platform in self.EXTERNAL_FORMAT_PLATFORMS.get(
+                config.format_type, frozenset()
+            )
+        ):
             load_methods.append('CREATE EXTERNAL TABLE (persistent virtual table)')
         if self._supports('json_openjson', target_platform) and file_type == 'json':
             load_methods.append('OPENJSON / JSON_VALUE (native JSON parsing)')
@@ -1495,7 +1655,7 @@ class SQLGenerator:
         elif file_type == 'parquet':
             lines += _best_practices_parquet(size_mb, compression, metadata)
         elif file_type == 'delta':
-            lines += _best_practices_delta(metadata)
+            lines += _best_practices_delta(metadata, target_platform)
         elif file_type == 'json':
             lines += _best_practices_json(size_mb)
         else:
@@ -1537,6 +1697,13 @@ class SQLGenerator:
 
         fmt_name = f'ff_{metadata.get("file_type", "csv")}_format'
         loc = location or os.path.basename(metadata['file_path'])
+        if storage_url:
+            _, storage_path = _sql_server_storage_parts(
+                storage_url,
+                metadata.get('file_name', metadata['file_path']),
+                target_platform,
+            )
+            loc = storage_path or loc
 
         return {
             'create_table': self.generate_create_table(metadata, table_name, schema_name,
@@ -1545,6 +1712,7 @@ class SQLGenerator:
                                                      target_platform=target_platform),
             'openrowset': self.generate_openrowset(metadata,
                                                    storage_url=storage_url,
+                                                   data_source=data_source,
                                                    target_platform=target_platform),
             'copy_into': self.generate_copy_into(metadata, table_name, schema_name,
                                                  storage_url=storage_url,
@@ -1561,7 +1729,8 @@ class SQLGenerator:
                                                     target_platform=target_platform),
             'credential_setup': self.generate_credential_setup(data_source, fmt_name,
                                                                metadata=metadata,
-                                                               target_platform=target_platform),
+                                                               target_platform=target_platform,
+                                                               storage_url=storage_url),
             'best_practices': self.generate_best_practices(metadata,
                                                            target_platform=target_platform),
         }
@@ -1862,11 +2031,24 @@ def _best_practices_summary(metadata: Dict[str, Any],
             recommended = 'BULK INSERT for load, then validate in SQL'
             fastest = 'BULK INSERT for local or staged CSV/text files'
         elif file_type == 'json':
-            recommended = 'OPENJSON / OPENROWSET(SINGLE_CLOB) for controlled parsing'
+            recommended = (
+                'Load JSON as text with OPENROWSET(SINGLE_CLOB), then parse '
+                'with OPENJSON'
+            )
             fastest = 'OPENJSON after loading the file as NVARCHAR(MAX)'
         elif file_type in {'parquet', 'delta'}:
-            recommended = 'Use OPENROWSET or convert to CSV/Parquet depending on platform limits'
-            fastest = 'OPENROWSET when supported; otherwise convert before load'
+            if target_platform == 'sql_server_2019':
+                recommended = (
+                    f'{file_type.title()} is not supported; convert to CSV '
+                    'before loading'
+                )
+                fastest = 'Convert to CSV, then use BULK INSERT'
+            else:
+                recommended = (
+                    f'OPENROWSET FORMAT=\'{file_type.upper()}\' over ABS, '
+                    'ADLS, or S3 storage'
+                )
+                fastest = 'OPENROWSET with projected columns'
 
     if size_mb > 512:
         staging = 'For large files, land data in staging and validate in batches'
@@ -2044,10 +2226,17 @@ def _best_practices_parquet(size_mb: float, compression: str,
     return lines
 
 
-def _best_practices_delta(metadata: Dict[str, Any]) -> List[str]:
+def _best_practices_delta(metadata: Dict[str, Any],
+                          target_platform: str) -> List[str]:
     dm = metadata.get('delta_metadata') or {}
     version = dm.get('version', 'unknown')
     partition_cols = dm.get('partition_columns') or []
+    sql_server_guidance = (
+        '--    SQL Server 2022+         → OPENROWSET / external table with '
+        'FORMAT=\'DELTA\''
+        if target_platform in {'sql_server_2022', 'sql_server_2025'}
+        else '--    SQL Server 2019          → Not supported; convert to CSV'
+    )
     lines = [
         f'-- Detected: Delta Lake table  (version {_sql_comment(version)})',
         f'-- Partition columns: {_sql_comment(partition_cols or "none")}',
@@ -2055,7 +2244,7 @@ def _best_practices_delta(metadata: Dict[str, Any]) -> List[str]:
         '-- 1. TOOL SELECTION',
         '--    Azure Synapse Serverless → OPENROWSET FORMAT=\'DELTA\'  (GA in 2024)',
         '--    Azure Databricks         → spark.read.format("delta").load("path")',
-        '--    SQL Server               → Not natively supported; export to Parquet first',
+        sql_server_guidance,
         '',
         '-- 2. TIME TRAVEL',
         '--    Read a specific version:  OPTION (timestamp AS OF \'2025-01-01\')',
@@ -2079,7 +2268,7 @@ def _best_practices_delta(metadata: Dict[str, Any]) -> List[str]:
         '--    OPTIMIZE delta.`path` ZORDER BY (event_date, user_id)',
         '--    Reduces file scans for selective queries significantly.',
         '',
-        '-- 6. CONVERT DELTA → PARQUET for SQL Server PolyBase',
+        '-- 6. CONVERT DELTA → PARQUET when the target does not support Delta',
         '--    spark.read.format("delta").load("path").write.parquet("out/")',
         '--    Then use CREATE EXTERNAL TABLE with FORMAT_TYPE = PARQUET.',
     ]
