@@ -110,7 +110,8 @@ iceberg_metadata = {
     "last-sequence-number": 1,
     "last-updated-ms": 1760000000000,
     "last-column-id": 4,
-    "schema": {
+    "current-schema-id": 0,
+    "schemas": [{
         "type": "struct",
         "schema-id": 0,
         "fields": [
@@ -119,8 +120,8 @@ iceberg_metadata = {
             {"id": 3, "name": "amount", "required": False, "type": "double"},
             {"id": 4, "name": "txn_date", "required": False, "type": "date"},
         ],
-    },
-    "partition-spec": {"spec-id": 0, "fields": []},
+    }],
+    "partition-specs": [{"spec-id": 0, "fields": []}],
     "sort-orders": [{"order-id": 0, "fields": []}],
     "default-sort-order-id": 0,
     "default-spec-id": 0,

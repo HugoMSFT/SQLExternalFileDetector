@@ -1096,7 +1096,25 @@
 
         function updateTabDots() {
             const pl = document.getElementById('selPlatform').value;
-            const compat = PLATFORM_TAB_COMPAT[pl] || {};
+            const compat = { ...(PLATFORM_TAB_COMPAT[pl] || {}) };
+            const fileType = selectedIdx >= 0
+                ? (currentFiles[selectedIdx].file_type || '').toLowerCase()
+                : '';
+            if (pl === 'sql_server_2019') {
+                if (fileType === 'parquet' || fileType === 'delta') {
+                    compat.openrowset = 'red';
+                    compat.ext_table = 'red';
+                } else if (fileType === 'json') {
+                    compat.openrowset = 'yellow';
+                    compat.ext_table = 'red';
+                }
+            } else if (
+                (pl === 'sql_server_2022' || pl === 'sql_server_2025')
+                && fileType === 'json'
+            ) {
+                compat.openrowset = 'yellow';
+                compat.ext_table = 'red';
+            }
             document.querySelectorAll('#tabBar .tab[data-tab]').forEach(tab => {
                 const key = tab.dataset.tab;
                 let dot = tab.querySelector('.tab-dot');
@@ -1127,10 +1145,14 @@
             const acct = (document.getElementById('inpStorageAccount') || {}).value || '';
             const cont = (document.getElementById('inpStorageContainer') || {}).value || '';
             const path = (document.getElementById('inpStoragePath') || {}).value || '';
+            const platform = document.getElementById('selPlatform').value;
             let url = '';
             if (acct) {
-                url = 'https://' + acct + '.dfs.core.windows.net';
-                if (cont) url += '/' + cont;
+                url = platform === 'fabric_sql_db' || platform === 'sql_server_2019'
+                    ? 'abfss://'
+                    : 'adls://';
+                if (cont) url += cont + '@';
+                url += acct + '.dfs.core.windows.net';
                 if (path) url += '/' + path.replace(/^\//, '');
             }
             const preview = document.getElementById('urlPreview');

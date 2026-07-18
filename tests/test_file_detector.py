@@ -4,10 +4,13 @@ import os
 import tempfile
 import json
 import csv
+import sys
 from pathlib import Path
+from unittest.mock import patch
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import external_file_detection.file_detector as file_detector_module
 from external_file_detection.file_detector import FileDetector
 from external_file_detection.external_file_detector import ExternalFileDetectorApp
 
@@ -401,3 +404,242 @@ def test_thread_safe_cache():
     import threading
     assert isinstance(detector._cache_lock, type(threading.Lock()))
     print("All tests passed!")
+
+
+def test_caches_are_lru_bounded(temp_dir):
+    """Long-running processes should not retain one cache entry per file forever."""
+    detector = FileDetector(cache_max_entries=2)
+    paths = []
+    for index in range(3):
+        path = os.path.join(temp_dir, f'{index}.txt')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(f'row {index}\n')
+        paths.append(path)
+        detector.analyze_file_metadata(path)
+
+    assert len(detector._metadata_cache) == 2
+    assert len(detector._encoding_cache) == 2
+    assert detector._get_file_signature(paths[0]) not in detector._metadata_cache
+
+
+def test_csv_inference_is_conservatively_nullable(temp_dir):
+    """Sampled rows cannot prove that future values will be non-null."""
+    csv_path = os.path.join(temp_dir, 'required-looking.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(['id', 'description'])
+        writer.writerow([1, 'x' * 240])
+
+    metadata = FileDetector().analyze_file_metadata(csv_path)
+
+    assert metadata['nullable_columns'] == ['id', 'description']
+    assert metadata['nullability_inference'] == 'conservative'
+    assert metadata['schema_inference'] == 'sampled'
+    assert metadata['observed_max_string_lengths']['description'] == 240
+    assert metadata['max_string_lengths']['description'] == 300
+
+
+def test_ndjson_analysis_counts_rows_without_retaining_them(temp_dir):
+    """NDJSON analysis should stream the file and bound its schema sample."""
+    json_path = os.path.join(temp_dir, 'events.ndjson')
+    with open(json_path, 'w', encoding='utf-8') as handle:
+        for index in range(350):
+            handle.write(json.dumps({'id': index, 'name': f'event-{index}'}) + '\n')
+
+    metadata = FileDetector().analyze_file_metadata(json_path)
+
+    assert metadata['json_format'] == 'ndjson'
+    assert metadata['row_count'] == 350
+    assert metadata['schema_sample_size'] == 200
+    assert metadata['schema_inference'] == 'sampled'
+
+
+def test_large_json_array_uses_bounded_schema_sample(temp_dir, monkeypatch):
+    """Large JSON arrays should not require a full in-memory parse."""
+    monkeypatch.setattr(
+        file_detector_module, 'JSON_FULL_PARSE_MAX_BYTES', 100
+    )
+    monkeypatch.setattr(
+        file_detector_module, 'JSON_SAMPLE_MAX_CHARS', 4096
+    )
+    json_path = os.path.join(temp_dir, 'large.json')
+    with open(json_path, 'w', encoding='utf-8') as handle:
+        json.dump(
+            [{'id': index, 'value': f'value-{index}'} for index in range(50)],
+            handle,
+        )
+
+    detector = FileDetector()
+    metadata = detector.analyze_file_metadata(json_path)
+    preview = detector.get_preview_data(json_path, max_rows=3)
+
+    assert metadata['analysis_truncated'] is True
+    assert metadata['row_count'] is None
+    assert metadata['schema_sample_size'] == 50
+    assert len(preview['rows']) == 3
+    assert preview['truncated'] is True
+
+
+def test_delta_fallback_analyzes_data_file_not_directory(temp_dir):
+    """Optional Delta support should still provide bounded schema metadata."""
+    delta_dir = os.path.join(temp_dir, 'delta')
+    os.makedirs(os.path.join(delta_dir, '_delta_log'))
+    data_dir = os.path.join(delta_dir, 'data')
+    os.makedirs(data_dir)
+    pq.write_table(
+        pa.table({'id': [1, 2], 'name': ['a', 'b']}),
+        os.path.join(data_dir, 'part-000.parquet'),
+    )
+
+    with patch.dict(sys.modules, {'deltalake': None}):
+        metadata = FileDetector().analyze_file_metadata(delta_dir)
+
+    assert 'error' not in metadata
+    assert metadata['file_type'] == 'delta'
+    assert metadata['row_count'] is None
+    assert metadata['schema_inference'] == 'underlying_parquet_file'
+
+
+def test_delta_fallback_excludes_checkpoint_parquet_files(temp_dir):
+    """Transaction-log checkpoints are metadata, not table data files."""
+    delta_dir = os.path.join(temp_dir, 'delta-checkpoint')
+    log_dir = os.path.join(delta_dir, '_delta_log')
+    data_dir = os.path.join(delta_dir, 'data')
+    os.makedirs(log_dir)
+    os.makedirs(data_dir)
+    pq.write_table(
+        pa.table({'checkpoint_metadata': ['not table data']}),
+        os.path.join(log_dir, '00000000000000000010.checkpoint.parquet'),
+    )
+    pq.write_table(
+        pa.table({'id': [1], 'name': ['row']}),
+        os.path.join(data_dir, 'part-000.parquet'),
+    )
+
+    detector = FileDetector()
+    with patch.dict(sys.modules, {'deltalake': None}):
+        metadata = detector.analyze_file_metadata(delta_dir)
+        preview = detector.get_preview_data(delta_dir, max_rows=1)
+
+    assert [name for name, _ in metadata['schema']] == ['id', 'name']
+    assert [column['name'] for column in preview['columns']] == ['id', 'name']
+
+
+def test_iceberg_uses_numeric_version_and_current_schema(temp_dir):
+    """Iceberg versions, schema IDs, and list partition specs follow metadata."""
+    table_dir = os.path.join(temp_dir, 'iceberg')
+    metadata_dir = os.path.join(table_dir, 'metadata')
+    os.makedirs(metadata_dir)
+
+    old_metadata = {
+        'format-version': 2,
+        'table-uuid': 'table-id',
+        'current-schema-id': 1,
+        'schemas': [{
+            'type': 'struct',
+            'schema-id': 1,
+            'fields': [{
+                'id': 1,
+                'name': 'old_column',
+                'required': True,
+                'type': 'long',
+            }],
+        }],
+        'partition-spec': [],
+        'current-snapshot-id': None,
+    }
+    with open(
+        os.path.join(metadata_dir, 'v9.metadata.json'),
+        'w',
+        encoding='utf-8',
+    ) as handle:
+        json.dump(old_metadata, handle)
+
+    current_metadata = {
+        'format-version': 2,
+        'table-uuid': 'table-id',
+        'current-schema-id': 10,
+        'schemas': [
+            {
+                'type': 'struct',
+                'schema-id': 10,
+                'fields': [
+                    {
+                        'id': 1,
+                        'name': 'id',
+                        'required': True,
+                        'type': 'long',
+                    },
+                    {
+                        'id': 2,
+                        'name': 'amount',
+                        'required': False,
+                        'type': 'decimal(10, 2)',
+                    },
+                ],
+            },
+            {
+                'type': 'struct',
+                'schema-id': 2,
+                'fields': [],
+            },
+        ],
+        'partition-spec': [{
+            'source-id': 1,
+            'field-id': 1000,
+            'name': 'id_bucket',
+            'transform': 'bucket[16]',
+        }],
+        'current-snapshot-id': 123,
+        'snapshots': [{
+            'snapshot-id': 123,
+            'summary': {'total-records': '42'},
+        }],
+    }
+    with open(
+        os.path.join(metadata_dir, 'v10.metadata.json'),
+        'w',
+        encoding='utf-8',
+    ) as handle:
+        json.dump(current_metadata, handle)
+    with open(
+        os.path.join(metadata_dir, 'version-hint.text'),
+        'w',
+        encoding='ascii',
+    ) as handle:
+        handle.write('9')
+
+    metadata = FileDetector().analyze_file_metadata(table_dir)
+
+    assert metadata['schema'] == [('id', 'int64'), ('amount', 'decimal128')]
+    assert metadata['nullable_columns'] == ['amount']
+    assert metadata['row_count'] == 42
+    assert metadata['iceberg_metadata']['metadata_file'] == 'v10.metadata.json'
+    assert metadata['iceberg_metadata']['partition_spec'][0]['name'] == 'id_bucket'
+
+
+def test_iceberg_detects_modern_metadata_filenames(temp_dir):
+    """UUID-suffixed metadata files should identify an Iceberg table."""
+    table_dir = os.path.join(temp_dir, 'iceberg-modern')
+    metadata_dir = os.path.join(table_dir, 'metadata')
+    os.makedirs(metadata_dir)
+    with open(
+        os.path.join(metadata_dir, '00001-table.metadata.json'),
+        'w',
+        encoding='utf-8',
+    ) as handle:
+        json.dump({
+            'format-version': 2,
+            'schema': {'type': 'struct', 'fields': []},
+            'partition-spec': [],
+            'current-snapshot-id': None,
+        }, handle)
+
+    detector = FileDetector()
+
+    assert detector.detect_file_type(table_dir) == 'iceberg'
+    metadata = detector.analyze_file_metadata(table_dir)
+    assert metadata['iceberg_metadata']['metadata_file'] == (
+        '00001-table.metadata.json'
+    )
+    assert detector.scan_directory(table_dir)[0]['file_type'] == 'iceberg'

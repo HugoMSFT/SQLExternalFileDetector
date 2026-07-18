@@ -1,314 +1,215 @@
-# External File Detection
+# SQL External File Detector
 
-A comprehensive Python application that detects file types and generates SQL DDL statements for external file formats and tables. Supports local storage, Amazon S3, and Azure Blob Storage.
+SQL External File Detector analyzes data files and generates platform-aware
+T-SQL loading and external-table guidance. It supports local files, Amazon S3,
+and Azure Blob Storage through a CLI and a local web interface.
 
 ## Features
 
-- **File Type Detection**: Automatically detects text, CSV, JSON, Parquet, Delta, ORC, and RC files
-- **Metadata Analysis**: Analyzes file structure, schema, and properties
-- **SQL DDL Generation**: Creates `CREATE EXTERNAL FILE FORMAT` and `CREATE EXTERNAL TABLE` statements
-- **Multi-Cloud Support**: Works with local storage, Amazon S3, and Azure Blob Storage
-- **Command-Line Interface**: Easy-to-use CLI for batch processing
-- **Comprehensive Parameter Support**: Includes all parameters from Microsoft SQL Server's external file format specification
+- Detects file formats and extracts schemas without loading whole tabular files.
+- Samples CSV, JSON, and Excel data conservatively for SQL type inference.
+- Reads Parquet metadata and bounded record batches.
+- Reads Delta Lake metadata when the optional Delta dependency is installed.
+- Selects current Apache Iceberg schemas and partition specs from table metadata.
+- Generates `CREATE TABLE`, `BULK INSERT`, `OPENROWSET`, external-table,
+  credential, JSON, and best-practice scripts where the target supports them.
+- Keeps generated SQL aligned with SQL Server, Azure SQL, and Fabric SQL
+  Database feature differences.
+- Provides local, S3, and Azure Blob storage handlers.
 
-## Supported File Types
+Generated SQL is a starting point. Review data types, credentials, paths, and
+platform requirements before running it in a database.
 
-- **Text files** (.txt)
-- **CSV files** (.csv)
-- **JSON files** (.json)
-- **Parquet files** (.parquet)
-- **Delta Lake files** (.delta)
-- **ORC files** (.orc)
-- **RC files** (.rc)
+## Supported inputs
+
+| Input | Analysis |
+| --- | --- |
+| CSV and TSV | Delimiter, encoding, sampled schema, logical row count |
+| JSON, JSONL, and NDJSON | Bounded schema sample, nesting, row count where available |
+| Parquet | Arrow schema, row groups, compression, row count |
+| Delta Lake directories | Delta metadata, or a bounded Parquet schema fallback |
+| Apache Iceberg directories | Current schema, partition spec, snapshot row count |
+| Excel | Bounded worksheet sample |
+| Text | Encoding and streamed line count |
+| ORC and RCFile | Format recognition and SQL format guidance |
+
+The SQL generator targets:
+
+- SQL Server 2019, 2022, and 2025
+- Azure SQL Database
+- Azure SQL Managed Instance
+- Microsoft Fabric SQL Database
+
+Unsupported statements are returned as explanatory SQL comments with practical
+alternatives. For example, exposed targets do not support a JSON external file
+format, so JSON output recommends `OPENROWSET` with `OPENJSON` instead.
+
+SQL Server 2019 does not generate Parquet or Delta file access. SQL Server 2022
+and later generate Parquet and Delta `OPENROWSET`/external-table scripts against
+supported object storage. Azure data sources use `abs://` for Blob Storage or
+`adls://` for ADLS Gen2 without the retired `TYPE = HADOOP` option.
 
 ## Installation
 
-```bash
-pip install -e .
-```
-
-The project also includes a minimal `pyproject.toml`, so standard modern Python build tooling works as expected.
-
-Optional Spark/Delta Spark support:
+Python 3.9 or newer is required.
 
 ```bash
-pip install -e .[spark]
+python -m pip install .
 ```
 
-## Quick Start
-
-### Analyze a local directory
+For development and tests:
 
 ```bash
-external-file-detector analyze /path/to/data/
+python -m pip install -e ".[test]"
 ```
 
-### Analyze specific files
+Optional integrations:
 
 ```bash
-external-file-detector analyze-files file1.csv file2.json --data-source MyDataSource
+python -m pip install ".[s3]"
+python -m pip install ".[azure]"
+python -m pip install ".[delta]"
+python -m pip install ".[spark]"
+python -m pip install ".[all]"
 ```
 
-### Generate external data source DDL
+`all` installs every optional runtime integration. Test dependencies are kept
+in the separate `test` extra.
+
+## CLI
+
+Analyze a local directory:
 
 ```bash
-external-file-detector generate-data-source MyDataSource s3 's3://my-bucket/data/' --credential MyCredential
+external-file-detector analyze C:\data --data-source MyDataSource
 ```
 
-## Microsoft Fabric SQL Database Notes
-
-- `OPENROWSET` is available in Fabric SQL Database (Data Virtualization):
-  https://learn.microsoft.com/en-us/fabric/database/sql/data-virtualization
-- `BULK INSERT` is **not** available in Fabric SQL Database.
-- `COPY INTO` is **not** available in SQL Server, Azure SQL Database, Azure SQL Managed Instance, or Fabric SQL Database.
-
-Use `OPENROWSET`-based loading patterns instead:
-
-```sql
--- 1) Create a new table from external data
-SELECT *
-INTO dbo.stg_sales
-FROM OPENROWSET(
-    BULK 'https://<storage_account>.dfs.core.windows.net/<container>/sales/*.parquet',
-    FORMAT = 'PARQUET'
-) AS src;
-
--- 2) Insert into an existing table
-INSERT INTO dbo.sales (order_id, customer_id, amount, order_date)
-SELECT order_id, customer_id, amount, order_date
-FROM OPENROWSET(
-    BULK 'https://<storage_account>.dfs.core.windows.net/<container>/sales/*.parquet',
-    FORMAT = 'PARQUET'
-) AS src;
-```
-
-Other alternatives when `COPY INTO` is unavailable:
-- `BULK INSERT` (SQL Server / Azure SQL MI / Azure SQL DB where supported)
-- `OPENROWSET` + `OPENJSON` for JSON payloads
-- Fabric Data Pipelines / Dataflows Gen2 for orchestrated ingestion
-
-## CLI Commands
-
-### `analyze`
-
-Analyze all files in a directory and generate SQL DDL.
+Analyze selected local or remote files:
 
 ```bash
-external-file-detector analyze <location> [OPTIONS]
-
-Options:
-  --data-source, -d TEXT          Name of the external data source for SQL DDL
-  --output, -o TEXT               Output file path for results
-  --format, -f [sql|json]         Output format (default: sql)
-  --aws-access-key-id TEXT        AWS access key ID for S3 access
-  --aws-secret-access-key TEXT    AWS secret access key for S3 access
-  --aws-region TEXT               AWS region for S3 access (default: us-east-1)
-  --azure-account-name TEXT       Azure storage account name
-  --azure-account-key TEXT        Azure storage account key
-  --azure-connection-string TEXT  Azure storage connection string
+external-file-detector analyze-files orders.csv events.ndjson --format json
+external-file-detector analyze-files s3://my-bucket/data/orders.csv
 ```
 
-### `analyze-files`
-
-Analyze specific files.
+Export generated output:
 
 ```bash
-external-file-detector analyze-files <file1> [file2] ... [OPTIONS]
-
-Options:
-  --data-source, -d TEXT      Name of the external data source for SQL DDL
-  --output, -o TEXT           Output file path for results
-  --format, -f [sql|json]     Output format (default: sql)
+external-file-detector analyze C:\data --output analysis.sql
+external-file-detector analyze C:\data --format json --output analysis.json
 ```
 
-### `generate-data-source`
-
-Generate CREATE EXTERNAL DATA SOURCE statement.
+List a location or inspect supported types:
 
 ```bash
-external-file-detector generate-data-source <name> <storage_type> <location> [OPTIONS]
-
-Arguments:
-  name            Name of the data source
-  storage_type    Type of storage (s3, azure, local)
-  location        Base location/URL
-
-Options:
-  --credential TEXT    Name of the database credential to use
-```
-
-### `supported-types`
-
-List supported file types.
-
-```bash
+external-file-detector list-files C:\data
 external-file-detector supported-types
 ```
 
-### `list-files`
-
-List files at the specified location.
+Generate an external data source statement:
 
 ```bash
-external-file-detector list-files <location> [OPTIONS]
+external-file-detector generate-data-source MyDataSource azure \
+  "https://account.blob.core.windows.net/container"
 ```
 
-## Storage Support
+Cloud credential options are available on `analyze`, `analyze-files`, and
+`list-files`. Prefer their environment-variable equivalents:
 
-### Local Storage
+| Provider | Environment variables |
+| --- | --- |
+| AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` |
+| Azure | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`, `AZURE_STORAGE_CONNECTION_STRING` |
 
-Simply provide a local directory path:
+Run `external-file-detector COMMAND --help` for complete command options.
+
+## Web interface
 
 ```bash
-external-file-detector analyze /home/user/data/
+external-file-detector gui --root-dir C:\data
 ```
 
-### Amazon S3
+Open `http://127.0.0.1:5000`. The built-in Flask server is intentionally
+loopback-only because its filesystem APIs do not provide authentication.
+`--root-dir` limits browsing and analysis to one directory tree.
 
-Provide S3 URLs and credentials:
+For remote access, use `external_file_detection.web_ui.create_app()` behind an
+authenticated production WSGI server and reverse proxy. Do not expose the
+built-in development server.
 
-```bash
-external-file-detector analyze s3://my-bucket/data/ \
-  --aws-access-key-id YOUR_ACCESS_KEY \
-  --aws-secret-access-key YOUR_SECRET_KEY \
-  --aws-region us-west-2
-```
+## Python API
 
-### Azure Blob Storage
+```python
+from external_file_detection import FileDetector, SQLGenerator
 
-Provide Azure URLs and credentials:
+detector = FileDetector()
+metadata = detector.analyze_file_metadata("orders.parquet")
 
-```bash
-external-file-detector analyze azure://container/prefix \
-  --azure-account-name mystorageaccount \
-  --azure-account-key YOUR_ACCOUNT_KEY
-```
-
-Or use connection string:
-
-```bash
-external-file-detector analyze azure://container/prefix \
-  --azure-connection-string "DefaultEndpointsProtocol=https;AccountName=..."
-```
-
-## Example Output
-
-### CSV File Analysis
-
-For a CSV file with employee data:
-
-```sql
--- External File Format
-CREATE EXTERNAL FILE FORMAT [ff_csv_format]
-WITH (
-    FORMAT_TYPE = DELIMITEDTEXT,
-    FIELD_TERMINATOR = ',',
-    STRING_DELIMITER = '"',
-    USE_TYPE_DEFAULT = TRUE,
-    ENCODING = 'UTF-8',
-    FIRST_ROW = 2
-);
-
--- External Table
-CREATE EXTERNAL TABLE [ext_employees]
-(
-    [id] BIGINT,
-    [name] NVARCHAR(MAX),
-    [age] BIGINT,
-    [salary] FLOAT,
-    [department] NVARCHAR(MAX)
+generator = SQLGenerator()
+statements = generator.generate_all_statements(
+    metadata,
+    table_name="orders",
+    data_source="MyDataSource",
+    target_platform="sql_server_2022",
 )
-WITH (
-    DATA_SOURCE = [MyDataSource],
-    LOCATION = 'employees.csv',
-    FILE_FORMAT = [ff_csv_format]
-);
+
+print(statements["create_external_table"])
 ```
 
-### JSON File Analysis
+For location-level analysis:
 
-For a JSON file with user data:
+```python
+from external_file_detection import ExternalFileDetectorApp
 
-```sql
--- External File Format
-CREATE EXTERNAL FILE FORMAT [ff_json_format]
-WITH (
-    FORMAT_TYPE = JSON
-);
-
--- External Table
-CREATE EXTERNAL TABLE [ext_users]
-(
-    [id] INT,
-    [name] NVARCHAR(MAX),
-    [active] BIT,
-    [joined_date] NVARCHAR(MAX)
-)
-WITH (
-    DATA_SOURCE = [MyDataSource],
-    LOCATION = 'users.json',
-    FILE_FORMAT = [ff_json_format]
-);
+app = ExternalFileDetectorApp()
+result = app.analyze_location(r"C:\data", data_source="MyDataSource")
 ```
 
-## SQL Server External File Format Parameters
+## Analysis behavior
 
-The application supports all parameters from the [Microsoft SQL Server documentation](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-external-file-format-transact-sql?view=sql-server-ver17):
-
-- `FORMAT_TYPE` - File format type (DELIMITEDTEXT, JSON, PARQUET, ORC, RCFILE)
-- `FIELD_TERMINATOR` - Field terminator for delimited text files
-- `STRING_DELIMITER` - String delimiter for delimited text files
-- `DATE_FORMAT` - Date format specification
-- `USE_TYPE_DEFAULT` - Use type default values for missing fields
-- `ENCODING` - File encoding (UTF8, UTF16, etc.)
-- `FIRST_ROW` - First row to start reading data
-- `DATA_COMPRESSION` - Compression method (GZIP, SNAPPY, etc.)
-- `ROW_TERMINATOR` - Row terminator for delimited text files
-- `SERIALIZATION_ENCODING` - Serialization encoding for complex formats
-- `SERIALIZER_METHOD` - Serializer method for complex formats
-- `DESERIALIZER_METHOD` - Deserializer method for complex formats
-
-## Architecture
-
-The application consists of several key components:
-
-- **FileDetector**: Detects file types and analyzes metadata
-- **SQLGenerator**: Generates SQL DDL statements
-- **StorageHandlers**: Handle different storage types (local, S3, Azure)
-- **ExternalFileDetectorApp**: Main application orchestrator
-- **CLI**: Command-line interface
+- Metadata and encoding caches are thread-safe, signature-based LRU caches.
+- CSV and text row counts stream records instead of retaining file contents.
+- NDJSON retains only a bounded schema sample while counting valid rows.
+- Large JSON arrays use a bounded prefix sample; their row count is reported as
+  unknown rather than guessed.
+- Inferred CSV, JSON, and Excel columns default to nullable because a sample
+  cannot prove future values are required.
+- Sampled string lengths include sizing headroom before SQL types are generated.
+- Parquet previews read bounded record batches rather than complete row groups.
+- Iceberg row counts come from the current snapshot summary, not every Parquet
+  file in the data directory.
 
 ## Development
 
-### Running Tests
+Run the test suite:
 
 ```bash
-python tests/test_file_detector.py
-python tests/test_sql_generator.py
+python -m pytest -q
 ```
 
-### Project Structure
+Build distributable packages:
 
+```bash
+python -m pip install build
+python -m build
 ```
+
+CI runs the tests on Linux and Windows and builds the wheel from
+`pyproject.toml`.
+
+## Project layout
+
+```text
 external_file_detection/
-├── __init__.py
-├── cli.py                    # Command-line interface
-├── external_file_detector.py # Main application
-├── file_detector.py          # File type detection and metadata analysis
-├── sql_generator.py          # SQL DDL generation
-└── storage_handlers.py       # Storage abstraction layer
+|-- cli.py
+|-- external_file_detector.py
+|-- file_detector.py
+|-- sql_generator.py
+|-- storage_handlers.py
+|-- web_gui.py
+|-- web_ui.py
+`-- templates/
 ```
-
-## Requirements
-
-- Python 3.8+
-- pandas >= 1.5.0
-- pyarrow >= 10.0.0
-- boto3 >= 1.26.0 (for S3 support)
-- azure-storage-blob >= 12.14.0 (for Azure support)
-- azure-identity >= 1.12.0 (for Azure support)
-- click >= 8.1.0 (for CLI)
 
 ## License
 
-This project is open source and available under the MIT License.
+Licensed under the [MIT License](LICENSE).

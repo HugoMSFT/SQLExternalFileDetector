@@ -48,6 +48,22 @@ def storage_options(func):
     return func
 
 
+def _run_web_gui(host: str, port: int, debug: bool,
+                 root_dir: str = None) -> None:
+    """Launch the shared web GUI implementation."""
+    try:
+        from .web_gui import ExternalFileDetectionWebGUI
+        app = ExternalFileDetectionWebGUI(root_dir=root_dir)
+        app.run(host=host, port=port, debug=debug)
+    except ImportError as e:
+        raise click.ClickException(
+            f"Could not launch web GUI: {e}. "
+            f"Please ensure Flask is installed: pip install flask"
+        ) from e
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+
 @click.group()
 @click.version_option(version=__version__)
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
@@ -67,15 +83,7 @@ def main(verbose):
 @click.option('--root-dir', default=None, help='Restrict file browsing to this directory tree')
 def gui(host, port, debug, root_dir):
     """Launch the web-based graphical user interface."""
-    try:
-        from .web_gui import ExternalFileDetectionWebGUI
-        app = ExternalFileDetectionWebGUI(root_dir=root_dir)
-        app.run(host=host, port=port, debug=debug)
-    except ImportError as e:
-        click.echo(f"Error: Could not launch web GUI: {e}")
-        click.echo("Please ensure Flask is installed: pip install flask")
-    except Exception as e:
-        click.echo(f"Error: {e}")
+    _run_web_gui(host, port, debug, root_dir)
 
 
 @main.command()
@@ -137,9 +145,10 @@ def analyze(location, data_source, output, format, aws_access_key_id,
         if 'error' in results:
             click.echo(f"Warning: {results['error']}", err=True)
             
+    except click.ClickException:
+        raise
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise SystemExit(1)
+        raise click.ClickException(str(e)) from e
 
 
 @main.command()
@@ -150,10 +159,17 @@ def analyze(location, data_source, output, format, aws_access_key_id,
               help='Output file path for results')
 @click.option('--format', '-f', default='sql', type=click.Choice(['sql', 'json']),
               help='Output format')
-def analyze_files(files, data_source, output, format):
+@storage_options
+def analyze_files(files, data_source, output, format, aws_access_key_id,
+                  aws_secret_access_key, aws_region, azure_account_name,
+                  azure_account_key, azure_connection_string):
     """Analyze specific files."""
-    
-    app = ExternalFileDetectorApp()
+
+    storage_config = _build_storage_config(
+        aws_access_key_id, aws_secret_access_key, aws_region,
+        azure_account_name, azure_account_key, azure_connection_string
+    )
+    app = ExternalFileDetectorApp(storage_config)
     
     try:
         results = app.analyze_files(list(files), data_source)
@@ -181,10 +197,17 @@ def analyze_files(files, data_source, output, format):
                         click.echo(f"-- File: {result['file_path']}")
                         click.echo(result['sql_ddl'])
                         click.echo()
+
+        failed = sum(1 for result in results if 'error' in result)
+        if failed:
+            raise click.ClickException(
+                f"{failed} of {len(results)} files could not be analyzed"
+            )
     
+    except click.ClickException:
+        raise
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise SystemExit(1)
+        raise click.ClickException(str(e)) from e
 
 
 @main.command()
@@ -251,10 +274,11 @@ def list_files(location, aws_access_key_id, aws_secret_access_key, aws_region,
 @click.option('--host', '-h', default='127.0.0.1', help='Host to bind to')
 @click.option('--port', '-p', default=5000, type=int, help='Port to listen on')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def web(host, port, debug):
-    """Launch the web UI."""
-    from .web_ui import run_web_ui
-    run_web_ui(host=host, port=port, debug=debug)
+@click.option('--root-dir', default=None,
+              help='Restrict file browsing to this directory tree')
+def web(host, port, debug, root_dir):
+    """Launch the web UI (compatibility alias for gui)."""
+    _run_web_gui(host, port, debug, root_dir)
 
 
 if __name__ == '__main__':

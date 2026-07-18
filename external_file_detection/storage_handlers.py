@@ -2,11 +2,69 @@
 
 import os
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Tuple
 from abc import ABC, abstractmethod
-from pathlib import Path
+from urllib.parse import quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_parent_directory(path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def _is_local_table_directory(path: str) -> bool:
+    """Return whether a local directory is a Delta or Iceberg table root."""
+    if os.path.isdir(os.path.join(path, '_delta_log')):
+        return True
+    metadata_dir = os.path.join(path, 'metadata')
+    if not os.path.isdir(metadata_dir):
+        return False
+    try:
+        return any(
+            entry.is_file()
+            and entry.name.lower().endswith('.metadata.json')
+            for entry in os.scandir(metadata_dir)
+        )
+    except OSError:
+        return False
+
+
+def _parse_s3_path(path: str, require_key: bool = False) -> Tuple[str, str]:
+    parsed = urlparse(path)
+    if parsed.scheme.lower() != 's3' or not parsed.netloc:
+        raise ValueError("S3 path must use s3://bucket[/key]")
+    key = unquote(parsed.path.lstrip('/'))
+    if require_key and not key:
+        raise ValueError("S3 object path must include a key")
+    return parsed.netloc, key
+
+
+def _parse_azure_path(path: str, require_blob: bool = False) -> Tuple[str, str]:
+    parsed = urlparse(path)
+    if parsed.scheme.lower() == 'azure':
+        container = parsed.netloc
+        blob_name = unquote(parsed.path.lstrip('/'))
+    elif parsed.scheme.lower() == 'https':
+        hostname = (parsed.hostname or '').lower()
+        if not hostname.endswith('.blob.core.windows.net'):
+            raise ValueError(
+                "Azure HTTPS path must use a *.blob.core.windows.net host"
+            )
+        raw_path = parsed.path.lstrip('/')
+        raw_container, separator, raw_blob_name = raw_path.partition('/')
+        container = unquote(raw_container)
+        blob_name = unquote(raw_blob_name) if separator else ''
+    else:
+        raise ValueError("Azure path must start with azure:// or use an HTTPS blob URL")
+
+    if not container:
+        raise ValueError("Azure path must include a container")
+    if require_blob and not blob_name:
+        raise ValueError("Azure blob path must include a blob name")
+    return container, blob_name
 
 
 class StorageHandler(ABC):
@@ -36,21 +94,26 @@ class LocalStorageHandler(StorageHandler):
         files = []
         if os.path.isfile(path):
             return [path]
+        if not os.path.isdir(path):
+            raise FileNotFoundError(f"Local path does not exist: {path}")
+        if _is_local_table_directory(path):
+            return [path]
         
         for root, dirs, filenames in os.walk(path):
-            delta_dirs = []
+            dirs.sort()
+            table_dirs = []
             remaining_dirs = []
             for dirname in dirs:
                 full_dir = os.path.join(root, dirname)
-                if os.path.isdir(os.path.join(full_dir, '_delta_log')):
-                    delta_dirs.append(full_dir)
+                if _is_local_table_directory(full_dir):
+                    table_dirs.append(full_dir)
                 else:
                     remaining_dirs.append(dirname)
 
-            files.extend(delta_dirs)
+            files.extend(sorted(table_dirs))
             dirs[:] = remaining_dirs
 
-            for filename in filenames:
+            for filename in sorted(filenames):
                 files.append(os.path.join(root, filename))
         
         return files
@@ -91,13 +154,7 @@ class S3StorageHandler(StorageHandler):
     
     def list_files(self, path: str) -> List[str]:
         """List files in S3 bucket/prefix."""
-        # Parse S3 path: s3://bucket/prefix
-        if not path.startswith('s3://'):
-            raise ValueError("S3 path must start with s3://")
-        
-        path_parts = path[5:].split('/', 1)
-        bucket = path_parts[0]
-        prefix = path_parts[1] if len(path_parts) > 1 else ''
+        bucket, prefix = _parse_s3_path(path)
         
         files = []
         paginator = self.s3_client.get_paginator('list_objects_v2')
@@ -106,18 +163,14 @@ class S3StorageHandler(StorageHandler):
             if 'Contents' in page:
                 for obj in page['Contents']:
                     if not obj['Key'].endswith('/'):  # Skip directories
-                        files.append(f"s3://{bucket}/{obj['Key']}")
+                        encoded_key = quote(obj['Key'], safe='/')
+                        files.append(f"s3://{bucket}/{encoded_key}")
         
         return files
     
     def get_file_info(self, file_path: str) -> Dict[str, Any]:
         """Get S3 file information."""
-        if not file_path.startswith('s3://'):
-            raise ValueError("S3 path must start with s3://")
-        
-        path_parts = file_path[5:].split('/', 1)
-        bucket = path_parts[0]
-        key = path_parts[1]
+        bucket, key = _parse_s3_path(file_path, require_key=True)
         
         try:
             response = self.s3_client.head_object(Bucket=bucket, Key=key)
@@ -137,15 +190,8 @@ class S3StorageHandler(StorageHandler):
     
     def download_file(self, source_path: str, local_path: str) -> str:
         """Download S3 file to local path."""
-        if not source_path.startswith('s3://'):
-            raise ValueError("S3 path must start with s3://")
-        
-        path_parts = source_path[5:].split('/', 1)
-        bucket = path_parts[0]
-        key = path_parts[1]
-        
-        # Create local directory if it doesn't exist
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        bucket, key = _parse_s3_path(source_path, require_key=True)
+        _ensure_parent_directory(local_path)
         
         self.s3_client.download_file(bucket, key, local_path)
         return local_path
@@ -165,6 +211,7 @@ class AzureStorageHandler(StorageHandler):
                 "azure-storage-blob and azure-identity are required for Azure storage. "
                 "Install with: pip install azure-storage-blob azure-identity"
             )
+        self.account_name = account_name
         if connection_string:
             self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
         elif account_name:
@@ -188,43 +235,22 @@ class AzureStorageHandler(StorageHandler):
     
     def list_files(self, path: str) -> List[str]:
         """List files in Azure blob container."""
-        # Parse Azure path: https://account.blob.core.windows.net/container/prefix
-        # or azure://container/prefix
-        if path.startswith('https://'):
-            # Parse full URL
-            parts = path.split('/')
-            account_name = parts[2].split('.')[0]
-            container = parts[3]
-            prefix = '/'.join(parts[4:]) if len(parts) > 4 else ''
-        elif path.startswith('azure://'):
-            # Parse simplified format
-            path_parts = path[8:].split('/', 1)
-            container = path_parts[0]
-            prefix = path_parts[1] if len(path_parts) > 1 else ''
-        else:
-            raise ValueError("Azure path must start with https:// or azure://")
+        container, prefix = _parse_azure_path(path)
         
         files = []
         container_client = self.blob_service_client.get_container_client(container)
-        
-        try:
-            blob_list = container_client.list_blobs(name_starts_with=prefix)
-            for blob in blob_list:
-                if not blob.name.endswith('/'):  # Skip directories
-                    files.append(f"azure://{container}/{blob.name}")
-        except Exception as e:
-            print(f"Error listing Azure blobs: {e}")
+
+        blob_list = container_client.list_blobs(name_starts_with=prefix)
+        for blob in blob_list:
+            if not blob.name.endswith('/'):  # Skip directories
+                encoded_name = quote(blob.name, safe='/')
+                files.append(f"azure://{container}/{encoded_name}")
         
         return files
     
     def get_file_info(self, file_path: str) -> Dict[str, Any]:
         """Get Azure blob information."""
-        if file_path.startswith('azure://'):
-            path_parts = file_path[8:].split('/', 1)
-            container = path_parts[0]
-            blob_name = path_parts[1]
-        else:
-            raise ValueError("Azure path must start with azure://")
+        container, blob_name = _parse_azure_path(file_path, require_blob=True)
         
         try:
             blob_client = self.blob_service_client.get_blob_client(
@@ -250,15 +276,8 @@ class AzureStorageHandler(StorageHandler):
     
     def download_file(self, source_path: str, local_path: str) -> str:
         """Download Azure blob to local path."""
-        if not source_path.startswith('azure://'):
-            raise ValueError("Azure path must start with azure://")
-        
-        path_parts = source_path[8:].split('/', 1)
-        container = path_parts[0]
-        blob_name = path_parts[1]
-        
-        # Create local directory if it doesn't exist
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        container, blob_name = _parse_azure_path(source_path, require_blob=True)
+        _ensure_parent_directory(local_path)
         
         blob_client = self.blob_service_client.get_blob_client(
             container=container,
@@ -266,7 +285,7 @@ class AzureStorageHandler(StorageHandler):
         )
         
         with open(local_path, 'wb') as download_file:
-            download_file.write(blob_client.download_blob().readall())
+            blob_client.download_blob().readinto(download_file)
         
         return local_path
 
@@ -277,13 +296,19 @@ class StorageFactory:
     @staticmethod
     def create_handler(path: str, **kwargs) -> StorageHandler:
         """Create appropriate storage handler based on path."""
-        if path.startswith('s3://'):
+        parsed = urlparse(path)
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or '').lower()
+
+        if scheme == 's3':
             return S3StorageHandler(
                 aws_access_key_id=kwargs.get('aws_access_key_id'),
                 aws_secret_access_key=kwargs.get('aws_secret_access_key'),
                 region_name=kwargs.get('region_name', 'us-east-1')
             )
-        elif path.startswith('azure://') or (path.startswith('https://') and 'blob.core.windows.net' in path):
+        elif scheme == 'azure' or (
+            scheme == 'https' and hostname.endswith('.blob.core.windows.net')
+        ):
             return AzureStorageHandler(
                 account_name=kwargs.get('azure_account_name'),
                 account_key=kwargs.get('azure_account_key'),
@@ -291,3 +316,28 @@ class StorageFactory:
             )
         else:
             return LocalStorageHandler()
+
+    @staticmethod
+    def is_remote(path: str) -> bool:
+        """Return whether *path* names a supported remote storage object."""
+        parsed = urlparse(path)
+        hostname = (parsed.hostname or '').lower()
+        return parsed.scheme.lower() in {'s3', 'azure'} or (
+            parsed.scheme.lower() == 'https'
+            and hostname.endswith('.blob.core.windows.net')
+        )
+
+    @staticmethod
+    def cache_key(path: str) -> str:
+        """Return a handler cache key that preserves remote account boundaries."""
+        parsed = urlparse(path)
+        if StorageFactory.is_remote(path):
+            return f'{parsed.scheme.lower()}://{parsed.netloc.lower()}'
+        return 'local'
+
+    @staticmethod
+    def basename(path: str) -> str:
+        """Return the final path component for local or remote paths."""
+        if StorageFactory.is_remote(path):
+            return os.path.basename(unquote(urlparse(path).path.rstrip('/')))
+        return os.path.basename(path)

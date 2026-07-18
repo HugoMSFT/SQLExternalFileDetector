@@ -19,13 +19,14 @@ def test_csv_file_format_generation():
     
     assert 'CREATE EXTERNAL FILE FORMAT [test_csv_format]' in ddl
     assert 'FORMAT_TYPE = DELIMITEDTEXT' in ddl
+    assert 'FORMAT_OPTIONS (' in ddl
     assert "FIELD_TERMINATOR = ','" in ddl
     assert 'FIRST_ROW = 2' in ddl
     assert 'USE_TYPE_DEFAULT = TRUE' in ddl
 
 
 def test_json_file_format_generation():
-    """Test JSON file format generation."""
+    """JSON external file formats are rejected for exposed SQL targets."""
     generator = SQLGenerator()
     
     metadata = {
@@ -35,8 +36,8 @@ def test_json_file_format_generation():
     
     ddl = generator.generate_external_file_format(metadata, 'test_json_format')
     
-    assert 'CREATE EXTERNAL FILE FORMAT [test_json_format]' in ddl
-    assert 'FORMAT_TYPE = JSON' in ddl
+    assert 'NOT AVAILABLE' in ddl
+    assert 'OPENROWSET with OPENJSON' in ddl
 
 
 def test_parquet_file_format_generation():
@@ -53,7 +54,64 @@ def test_parquet_file_format_generation():
     
     assert 'CREATE EXTERNAL FILE FORMAT [test_parquet_format]' in ddl
     assert 'FORMAT_TYPE = PARQUET' in ddl
-    assert 'DATA_COMPRESSION = \'SNAPPY\'' in ddl
+    assert (
+        "DATA_COMPRESSION = "
+        "'org.apache.hadoop.io.compress.SnappyCodec'"
+    ) in ddl
+
+
+def test_parquet_file_format_not_available_on_sql_server_2019():
+    """SQL Server 2019 does not support Parquet external file formats."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'parquet'},
+        target_platform='sql_server_2019',
+    )
+
+    assert 'NOT AVAILABLE' in ddl
+    assert 'FORMAT_TYPE = PARQUET' not in ddl
+
+
+def test_rc_file_format_uses_serde_method_on_sql_server_2019():
+    """RCFILE uses the documented SERDE_METHOD option name."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'rc'}, 'test_rc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert 'FORMAT_TYPE = RCFILE' in ddl
+    assert 'SERDE_METHOD' in ddl
+    assert 'SERIALIZER_METHOD' not in ddl
+    assert 'DESERIALIZER_METHOD' not in ddl
+    assert 'DATA_COMPRESSION' not in ddl
+
+
+def test_rc_file_format_emits_only_explicit_compression():
+    """RCFile compression must not be guessed from absent metadata."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'rc', 'compression': 'gzip'},
+        'test_rc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert (
+        "DATA_COMPRESSION = 'org.apache.hadoop.io.compress.GzipCodec'"
+        in ddl
+    )
+
+
+def test_orc_file_format_does_not_guess_compression():
+    """ORC metadata without a codec should not declare DefaultCodec."""
+    generator = SQLGenerator()
+    ddl = generator.generate_external_file_format(
+        {'file_type': 'orc'},
+        'test_orc_format',
+        target_platform='sql_server_2019',
+    )
+
+    assert 'DATA_COMPRESSION' not in ddl
 
 
 def test_external_table_generation():
@@ -138,6 +196,68 @@ def test_create_table_sql_server():
     assert 'CREATE TABLE [dbo].[tbl]' in sql
     assert 'DISTRIBUTION' not in sql
     assert 'HEAP' not in sql
+    assert "BULK 'https://" not in sql
+    assert 'adls://<container>@<storage_account>.dfs.core.windows.net' in sql
+
+
+def test_create_table_quick_load_uses_relative_adls_path():
+    """CREATE TABLE guidance uses DATA_SOURCE rather than a BULK HTTPS URL."""
+    gen = SQLGenerator()
+    meta = {
+        'file_type': 'parquet',
+        'file_path': 'sample.parquet',
+        'file_name': 'sample.parquet',
+        'schema': [('id', 'int64')],
+    }
+    sql = gen.generate_create_table(
+        meta,
+        'sample',
+        target_platform='sql_server_2025',
+        storage_url=(
+            'https://account.dfs.core.windows.net/'
+            'container/folder/sample.parquet'
+        ),
+        data_source='LakeDS',
+    )
+
+    assert "BULK 'folder/sample.parquet'" in sql
+    assert "DATA_SOURCE = 'LakeDS'" in sql
+    assert "FORMAT = 'PARQUET'" in sql
+    assert 'adls://container@account.dfs.core.windows.net' in sql
+    assert "BULK 'https://" not in sql
+
+
+def test_create_table_quick_load_rejects_sql_server_2019_parquet():
+    """SQL Server 2019 CREATE TABLE guidance does not fake Parquet access."""
+    gen = SQLGenerator()
+    sql = gen.generate_create_table(
+        {
+            'file_type': 'parquet',
+            'file_path': 'sample.parquet',
+            'schema': [('id', 'int64')],
+        },
+        target_platform='sql_server_2019',
+    )
+
+    assert 'not available on SQL Server 2019' in sql
+    assert 'FROM OPENROWSET(' not in sql
+
+
+def test_create_table_quick_load_routes_json_to_openjson():
+    """JSON CREATE TABLE guidance does not emit FORMAT=JSON or CSV."""
+    gen = SQLGenerator()
+    sql = gen.generate_create_table(
+        {
+            'file_type': 'json',
+            'file_path': 'sample.json',
+            'schema': [('id', 'int64')],
+        },
+        target_platform='sql_server_2022',
+    )
+
+    assert 'JSON Functions tab' in sql
+    assert 'FORMAT =' not in sql
+    assert 'FROM OPENROWSET(' not in sql
 
 
 def test_create_table_azure_sql():
@@ -246,14 +366,16 @@ def test_openrowset_csv():
 
 
 def test_openrowset_parquet():
-    """OPENROWSET for Parquet on SQL Server shows PolyBase guidance."""
+    """SQL Server 2022 OPENROWSET reads Parquet from object storage."""
     gen = SQLGenerator()
     meta = {
         'file_type': 'parquet', 'file_path': 'x.parquet',
         'schema': [('id', 'int64')],
     }
     sql = gen.generate_openrowset(meta)
-    assert 'PolyBase' in sql or 'OPENROWSET' in sql
+    assert "FORMAT = 'PARQUET'" in sql
+    assert "DATA_SOURCE = 'MyDataSource'" in sql
+    assert 'does not natively read Parquet' not in sql
 
 
 def test_openrowset_delta():
@@ -265,6 +387,65 @@ def test_openrowset_delta():
     }
     sql = gen.generate_openrowset(meta)
     assert "FORMAT = 'DELTA'" in sql
+
+
+def test_openrowset_parquet_and_delta_not_available_on_sql_server_2019():
+    """SQL Server 2019 cannot query Parquet or Delta files."""
+    gen = SQLGenerator()
+
+    for file_type in ('parquet', 'delta'):
+        sql = gen.generate_openrowset(
+            {
+                'file_type': file_type,
+                'file_path': f'data.{file_type}',
+                'schema': [('id', 'int64')],
+            },
+            target_platform='sql_server_2019',
+        )
+        assert 'not available on SQL Server 2019' in sql
+        assert f"FORMAT = '{file_type.upper()}'." in sql
+        assert 'FROM OPENROWSET(' not in sql
+
+
+def test_openrowset_json_on_sql_server_2019_is_text_workaround():
+    """SQL Server 2019 parses JSON text but has no JSON file format."""
+    gen = SQLGenerator()
+    sql = gen.generate_openrowset(
+        {
+            'file_type': 'json',
+            'file_path': 'data.json',
+            'schema': [('id', 'int64')],
+        },
+        target_platform='sql_server_2019',
+    )
+
+    assert "FORMAT = 'JSON' or JSON external tables" in sql
+    assert 'SINGLE_CLOB' in sql
+    assert 'OPENJSON' in sql
+
+
+def test_openrowset_parquet_on_sql_server_2025_uses_relative_storage_path():
+    """SQL Server 2025 uses ADLS data sources and relative BULK paths."""
+    gen = SQLGenerator()
+    sql = gen.generate_openrowset(
+        {
+            'file_type': 'parquet',
+            'file_path': 'sample.parquet',
+            'schema': [('id', 'int64')],
+        },
+        storage_url=(
+            'https://account.dfs.core.windows.net/'
+            'container/folder/sample.parquet'
+        ),
+        data_source='LakeDS',
+        target_platform='sql_server_2025',
+    )
+
+    assert "BULK 'folder/sample.parquet'" in sql
+    assert "DATA_SOURCE = 'LakeDS'" in sql
+    assert "FORMAT = 'PARQUET'" in sql
+    assert 'adls://container@account.dfs.core.windows.net' in sql
+    assert "BULK 'https://" not in sql
 
 
 # -------------------------------------------------------------------
@@ -389,6 +570,25 @@ def test_nvarchar_sizing_with_max_string_lengths():
     assert 'NVARCHAR(MAX)' in sql
 
 
+def test_best_practices_render_tab_delimiter_visibly():
+    """Control delimiters should not disappear from generated guidance."""
+    generator = SQLGenerator()
+    metadata = {
+        'file_type': 'csv',
+        'file_path': 'events.tsv',
+        'file_name': 'events.tsv',
+        'file_size': 100,
+        'encoding': 'utf-8',
+        'delimiter': '\t',
+        'has_header': True,
+        'schema': [('id', 'int64')],
+    }
+
+    sql = generator.generate_best_practices(metadata)
+
+    assert "FIELDTERMINATOR = '\\t'" in sql
+
+
 # -------------------------------------------------------------------
 # generate_copy_into
 # -------------------------------------------------------------------
@@ -451,7 +651,87 @@ def test_credential_setup():
     assert 'DATABASE SCOPED CREDENTIAL' in sql
     assert 'EXTERNAL DATA SOURCE [TestDS]' in sql
     assert 'cred_TestDS' in sql
-    assert 'Managed Identity' in sql  # option B
+
+
+def test_credential_setup_uses_adls_without_type_on_sql_server_2022():
+    """SQL Server 2022 infers ADLS from its URI and rejects TYPE=HADOOP."""
+    gen = SQLGenerator()
+    sql = gen.generate_credential_setup(
+        'LakeDS',
+        metadata={'file_type': 'parquet', 'file_name': 'sample.parquet'},
+        target_platform='sql_server_2022',
+        storage_url=(
+            'https://account.dfs.core.windows.net/'
+            'container/folder/sample.parquet'
+        ),
+    )
+
+    assert (
+        "LOCATION = 'adls://container@account.dfs.core.windows.net'"
+        in sql
+    )
+    assert 'TYPE = HADOOP' not in sql
+    assert "LOCATION = 'https://" not in sql
+    assert "IDENTITY = 'SHARED ACCESS SIGNATURE'" in sql
+
+
+def test_credential_setup_uses_abs_for_blob_storage_on_sql_server_2025():
+    """SQL Server 2025 converts Azure Blob HTTPS URLs to abs:// sources."""
+    gen = SQLGenerator()
+    sql = gen.generate_credential_setup(
+        'BlobDS',
+        metadata={'file_type': 'parquet', 'file_name': 'sample.parquet'},
+        target_platform='sql_server_2025',
+        storage_url=(
+            'https://account.blob.core.windows.net/'
+            'container/folder/sample.parquet'
+        ),
+    )
+
+    assert (
+        "LOCATION = 'abs://container@account.blob.core.windows.net'"
+        in sql
+    )
+    assert 'TYPE = HADOOP' not in sql
+
+
+def test_external_setup_not_generated_for_sql_server_2019_parquet():
+    """Unsupported SQL Server 2019 formats do not emit data source setup."""
+    gen = SQLGenerator()
+    sql = gen.generate_credential_setup(
+        'LakeDS',
+        metadata={'file_type': 'parquet', 'file_name': 'sample.parquet'},
+        target_platform='sql_server_2019',
+    )
+
+    assert 'NOT AVAILABLE' in sql
+    assert 'CREATE EXTERNAL DATA SOURCE' not in sql
+
+
+def test_all_statements_use_relative_external_table_location():
+    """The external table path is relative to the ADLS data source root."""
+    gen = SQLGenerator()
+    statements = gen.generate_all_statements(
+        {
+            'file_type': 'parquet',
+            'file_path': 'sample.parquet',
+            'file_name': 'sample.parquet',
+            'schema': [('id', 'int64')],
+        },
+        data_source='LakeDS',
+        target_platform='sql_server_2022',
+        storage_url=(
+            'adls://container@account.dfs.core.windows.net/'
+            'folder/sample.parquet'
+        ),
+    )
+
+    assert "LOCATION = 'folder/sample.parquet'" in (
+        statements['create_external_table']
+    )
+    assert "BULK 'folder/sample.parquet'" in statements['create_table']
+    assert "BULK 'https://" not in statements['create_table']
+    assert 'TYPE = HADOOP' not in statements['credential_setup']
 
 
 # -------------------------------------------------------------------
